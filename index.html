@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forge & Quill</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;1,300&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              serif: ['Merriweather', 'serif'],
+            },
+            colors: {
+              // Override default gray with Zinc (Neutral)
+              gray: {
+                50: '#fafafa',
+                100: '#f4f4f5',
+                200: '#e4e4e7',
+                300: '#d4d4d8',
+                400: '#a1a1aa',
+                500: '#71717a',
+                600: '#52525b',
+                700: '#3f3f46',
+                800: '#27272a',
+                900: '#18181b',
+                950: '#09090b',
+              },
+              paper: '#fdfbf7',
+              'paper-dark': '#09090b', // Zinc 950
+              ink: '#2d2d2d',
+              'ink-dark': '#e4e4e7', // Zinc 200
+              accent: '#eab308', // Yellow 500 (Golden)
+              'surface-dark': '#18181b', // Zinc 900
+              'gray-750': '#2d2d30',
+              'gray-850': '#1f1f22',
+            }
+          },
+        },
+      }
+    </script>
+    <style>
+      body {
+        background-color: #f3f4f6;
+        color: #1f2937;
+      }
+      .dark body {
+        background-color: #09090b; /* Zinc 950 */
+        color: #e4e4e7;
+      }
+      
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 10px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+      .dark ::-webkit-scrollbar-thumb {
+        background: #3f3f46;
+      }
+      .dark ::-webkit-scrollbar-thumb:hover {
+        background: #52525b;
+      }
+
+      /* Animations */
+      @keyframes fadeInUp {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .fade-in-up {
+        animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      @keyframes pulseGlow {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.4); transform: scale(1); }
+        50% { box-shadow: 0 0 0 8px rgba(234, 179, 8, 0); transform: scale(1.02); }
+      }
+      .animate-pulse-glow {
+        animation: pulseGlow 3s infinite;
+      }
+
+      /* Logo Animations */
+      @keyframes float {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-4px); }
+      }
+      .animate-float {
+        animation: float 6s ease-in-out infinite;
+      }
+
+      @keyframes flicker {
+        0%, 100% { opacity: 0.6; transform: scale(1); }
+        50% { opacity: 0.8; transform: scale(1.05); }
+      }
+      .animate-flicker {
+        animation: flicker 3s ease-in-out infinite;
+      }
+
+      /* Aurora Background Animation - Updated for better visibility */
+      @keyframes aurora {
+        0% { transform: translate(0, 0) scale(1); opacity: 0.4; }
+        33% { transform: translate(50px, -30px) scale(1.2); opacity: 0.6; }
+        66% { transform: translate(-30px, 40px) scale(0.9); opacity: 0.4; }
+        100% { transform: translate(0, 0) scale(1); opacity: 0.4; }
+      }
+      .animate-aurora {
+        animation: aurora 20s infinite alternate ease-in-out;
+      }
+
+      /* Button Sheen Effect - More intense */
+      @keyframes shine {
+        0% { left: -100%; opacity: 0; }
+        10% { opacity: 0.5; }
+        50% { left: 100%; opacity: 0.5; }
+        100% { left: 100%; opacity: 0; }
+      }
+      .animate-shine {
+        animation: shine 4s infinite cubic-bezier(0.4, 0, 0.2, 1);
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+      }
+
+      /* Paper Texture */
+      .paper-texture {
+        background-image: radial-gradient(#00000008 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+      .dark .paper-texture {
+        background-image: radial-gradient(#ffffff08 1px, transparent 1px);
+      }
+
+      /* Smooth Tooltip Fade */
+      .tooltip-enter {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+      .tooltip-enter-active {
+        opacity: 1;
+        transform: translateY(0);
+        transition: opacity 200ms, transform 200ms;
+      }
+      .tooltip-exit {
+        opacity: 1;
+      }
+      .tooltip-exit-active {
+        opacity: 0;
+        transition: opacity 150ms;
+      }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
+    "vite": "https://aistudiocdn.com/vite@^7.2.4",
+    "recharts": "https://aistudiocdn.com/recharts@^3.4.1",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="transition-colors duration-700 ease-in-out overflow-hidden bg-gray-100 dark:bg-black">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "name": "Forge and Quill",
+  "description": "A magic writing assistant for creating rich Talkie characters, featuring tone analysis, worldbuilding tools, and real-time AI collaboration.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
