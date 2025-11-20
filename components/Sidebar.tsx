@@ -225,7 +225,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="p-4 bg-white dark:bg-surface-dark border-t border-gray-100 dark:border-gray-800 transition-colors duration-700">
+      <div className="p-4 pb-8 md:pb-4 bg-white dark:bg-surface-dark border-t border-gray-100 dark:border-gray-800 transition-colors duration-700">
         {selectedImage && (
           <div className="mb-2 relative inline-block animate-in zoom-in duration-200">
             <img src={selectedImage} alt="Preview" className="h-16 rounded border border-gray-200 dark:border-gray-700" />

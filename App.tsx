@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { 
   BookOpen, Bot, Feather, Mic, Settings as SettingsIcon, Sliders, 
@@ -797,7 +796,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                       <h1 className="font-serif text-xl md:text-2xl font-bold text-gray-800 dark:text-white tracking-tight truncate">
                           {(state.settings.name || 'Untitled Talkie')}
                       </h1>
-                      <div className="flex items-center gap-2 text-xs text-gray-400 font-medium mt-1">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 font-medium mt-1">
                             <span className={`flex items-center gap-1 ${autoSaveStatus === 'saving' ? 'text-accent' : ''}`}>
                                 {autoSaveStatus === 'saving' && <Loader2 size={10} className="animate-spin" />}
                                 {autoSaveStatus === 'saved' && <Check size={10} />}
@@ -810,9 +809,9 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                     <span>Last edited {new Date(state.lastSaved).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit'})}</span>
                                 </>
                             )}
-                            <span className="hidden md:inline text-gray-300 dark:text-gray-700 mx-1">•</span>
-                            <span className="hidden md:inline opacity-40 hover:opacity-100 transition-opacity duration-300 text-[10px] font-mono uppercase tracking-wider">
-                                Powered by <a href="https://www.talkie-ai.com/profile/notsodangerous-327065556930864" target="_blank" rel="noopener noreferrer" className="text-yellow-500/90 hover:text-yellow-400 hover:underline decoration-yellow-500/30 underline-offset-2 transition-colors">NSD-CORE/17B</a>
+                            <span className="text-gray-300 dark:text-gray-700 mx-1">•</span>
+                            <span className="text-gray-500 hover:text-gray-800 dark:hover:text-gray-300 transition-colors duration-300 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap">
+                                Powered by <a href="https://flux.fearyour.life" target="_blank" rel="noopener noreferrer" className="text-yellow-500 hover:text-yellow-400 hover:underline decoration-yellow-500/30 underline-offset-2 transition-colors">NSD-CORE/17B</a>
                             </span>
                       </div>
                   </div>
@@ -1101,39 +1100,38 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                 />
               </div>
           </div>
+      </div>
 
-          {/* Mobile Sidebar (Overlay) */}
+      {/* Mobile Sidebar (Overlay) - MOVED OUTSIDE FLEX CONTAINER TO FIX Z-INDEX CLIPPING */}
+      <div className={`
+          md:hidden fixed inset-0 z-[100] pointer-events-none
+          ${isSidebarOpen ? 'pointer-events-auto' : ''}
+      `}>
+          {/* Backdrop */}
+          <div 
+              className={`absolute inset-0 bg-black/50 transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0'}`} 
+              onClick={() => setIsSidebarOpen(false)}
+          />
+          {/* Sidebar Panel */}
           <div className={`
-              md:hidden fixed inset-0 z-[70] pointer-events-none
-              ${isSidebarOpen ? 'pointer-events-auto' : ''}
+              absolute right-0 top-0 bottom-0 w-[85%] max-w-[320px] bg-white dark:bg-surface-dark shadow-2xl transition-transform duration-300 ease-out h-[calc(100dvh)]
+              ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full'}
           `}>
-              {/* Backdrop */}
-              <div 
-                  className={`absolute inset-0 bg-black/50 transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0'}`} 
-                  onClick={() => setIsSidebarOpen(false)}
-              />
-              {/* Sidebar Panel */}
-              <div className={`
-                  absolute right-0 top-0 bottom-0 w-[85%] max-w-[320px] bg-white dark:bg-surface-dark shadow-2xl transition-transform duration-300 ease-out
-                  ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full'}
-              `}>
-                  <div className="h-full relative">
-                      <button 
-                          onClick={() => setIsSidebarOpen(false)} 
-                          className="absolute top-4 right-4 z-50 p-2 bg-gray-100 dark:bg-gray-800 rounded-full text-gray-500"
-                      >
-                          <PanelRightClose size={20} />
-                      </button>
-                      <Sidebar 
-                        isOpen={isSidebarOpen} 
-                        draftContext={state.draft} 
-                        onToolCall={handleToolCall} 
-                        debugMode={appSettings.debugMode}
-                      />
-                  </div>
+              <div className="h-full relative">
+                  <button 
+                      onClick={() => setIsSidebarOpen(false)} 
+                      className="absolute top-4 right-4 z-50 p-2 bg-gray-100 dark:bg-gray-800 rounded-full text-gray-500"
+                  >
+                      <PanelRightClose size={20} />
+                  </button>
+                  <Sidebar 
+                    isOpen={isSidebarOpen} 
+                    draftContext={state.draft} 
+                    onToolCall={handleToolCall} 
+                    debugMode={appSettings.debugMode}
+                  />
               </div>
           </div>
-          
       </div>
     </div>
   );
