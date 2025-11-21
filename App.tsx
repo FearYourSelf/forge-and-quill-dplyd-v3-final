@@ -5,7 +5,7 @@ import {
   X, Play, Square, FolderOpen, FilePlus, Save, 
   AlertTriangle, Loader2, Info, Bug, Layout, Maximize2, Minimize2,
   PanelRightClose, PanelRightOpen, Globe, Sparkles, Terminal, VolumeX, ArrowLeftRight,
-  Flame, PenTool
+  Flame, PenTool, Copy, Wand2
 } from 'lucide-react';
 import Editor from './components/Editor';
 import Sidebar from './components/Sidebar';
@@ -15,7 +15,49 @@ import OnboardingOverlay from './components/OnboardingOverlay';
 import CharacterCompare from './components/CharacterCompare';
 import AppSettingsModal from './components/AppSettingsModal';
 import { ViewMode, AppState, WorldItem, AnalysisResult, CharacterSettings } from './types';
-import { generateCharacterProfile, generateSpeech, analyzeDraft } from './services/geminiService';
+import { generateCharacterProfile, generateSpeech, analyzeDraft, generateOptimizedTalkiePrompt } from './services/geminiService';
+
+// --- Extracted Component to Prevent Re-renders and Focus Loss ---
+const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, className }: any) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    return (
+      <div className="relative group">
+          <div className="flex justify-between items-center mb-2">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-500">{label}</label>
+              <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                      onClick={handleCopy}
+                      className="text-gray-400 hover:text-accent p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                      title="Copy to Clipboard"
+                  >
+                     {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+                  </button>
+                  <button 
+                      onClick={() => onExpand({name, value})}
+                      className="text-gray-400 hover:text-accent p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                      title="Maximize"
+                  >
+                      <Maximize2 size={14} />
+                  </button>
+              </div>
+          </div>
+          <textarea 
+            name={name} 
+            value={value} 
+            onChange={onChange}
+            className={className}
+            placeholder={placeholder}
+          />
+      </div>
+    );
+};
 
 const App: React.FC = () => {
   // Generate a simple ID
@@ -55,7 +97,7 @@ const App: React.FC = () => {
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const [view, setView] = useState<ViewMode>(ViewMode.EDITOR);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Default closed
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReadingAloud, setIsReadingAloud] = useState(false);
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false); // For Voice Preview
@@ -75,6 +117,12 @@ const App: React.FC = () => {
   // AI Confirm Modal
   const [showGenConfirm, setShowGenConfirm] = useState(false);
 
+  // AI Creator Input State
+  const [aiCreatorInput, setAiCreatorInput] = useState('');
+
+  // Live Session State
+  const [showLiveSession, setShowLiveSession] = useState(false);
+
   // Expanded Field Modal
   const [expandedField, setExpandedField] = useState<{name: string, value: string} | null>(null);
 
@@ -88,6 +136,9 @@ const App: React.FC = () => {
   // Worldbuilding state
   const [isAddingWorldItem, setIsAddingWorldItem] = useState(false);
   const [newWorldItem, setNewWorldItem] = useState<Partial<WorldItem>>({ category: 'Lore', title: '', description: '' });
+
+  // Prompt Copy State
+  const [isPromptCopied, setIsPromptCopied] = useState(false);
 
   // Initial Check for Onboarding
   useEffect(() => {
@@ -177,6 +228,7 @@ const App: React.FC = () => {
       setHistory([newState]);
       setHistoryIndex(0);
       setIsFileMenuOpen(false);
+      setAiCreatorInput('');
       showToast("New Talkie created");
   };
 
@@ -185,6 +237,7 @@ const App: React.FC = () => {
       setHistory([char]);
       setHistoryIndex(0);
       setIsFileMenuOpen(false);
+      setAiCreatorInput('');
       showToast(`Loaded ${char.settings.name || 'Untitled'}`);
   };
 
@@ -277,10 +330,34 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleGenClick = () => {
-      // Check if main fields are populated
-      const hasContent = state.settings.name || state.settings.personality || state.settings.backstory;
-      if (hasContent) {
+  // Handle Optimized Prompt Generation (Talkie Prompt)
+  const handleOptimizedPromptGeneration = async () => {
+      setIsGenerating(true);
+      try {
+          const optimizedPrompt = await generateOptimizedTalkiePrompt(state.settings, state.draft);
+          setState(prev => ({ ...prev, generatedIntro: optimizedPrompt }));
+          saveToHistory({ ...state, generatedIntro: optimizedPrompt });
+          showToast("Talkie Prompt Optimized!");
+      } catch (e) {
+          showToast("Prompt generation failed");
+      } finally {
+          setIsGenerating(false);
+      }
+  };
+
+  const handleCopyPrompt = () => {
+      if(state.generatedIntro) {
+          navigator.clipboard.writeText(state.generatedIntro);
+          setIsPromptCopied(true);
+          setTimeout(() => setIsPromptCopied(false), 2000);
+          showToast("Prompt Copied to Clipboard");
+      }
+  }
+
+  // Handle AI Character Creator (New/Improve)
+  const handleAICreatorAction = () => {
+      // If we have settings already, ask to overwrite
+      if (state.settings.name || state.settings.role) {
           setShowGenConfirm(true);
       } else {
           handleCharacterGeneration('create');
@@ -291,7 +368,7 @@ const App: React.FC = () => {
     setIsGenerating(true);
     setShowGenConfirm(false);
     try {
-      const result = await generateCharacterProfile(mode === 'improve' ? state.settings : undefined, mode);
+      const result = await generateCharacterProfile(mode === 'improve' ? state.settings : undefined, mode, aiCreatorInput);
       
       if (result) {
           const newSettings = {
@@ -339,6 +416,7 @@ const App: React.FC = () => {
           setState(newState);
           saveToHistory(newState);
           showToast(mode === 'create' ? "Character Created" : "Character Polished");
+          setAiCreatorInput(''); // Clear input after success
       }
     } catch (err) {
       console.error(err);
@@ -553,28 +631,6 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
         </button>
   );
 
-  const ExpandableInput = ({ label, name, value, placeholder, className }: any) => (
-      <div className="relative group">
-          <div className="flex justify-between items-center mb-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-gray-500">{label}</label>
-              <button 
-                  onClick={() => setExpandedField({name, value})}
-                  className="text-gray-400 hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
-                  title="Expand"
-              >
-                  <Maximize2 size={14} />
-              </button>
-          </div>
-          <textarea 
-            name={name} 
-            value={value} 
-            onChange={handleSettingsChange}
-            className={className}
-            placeholder={placeholder}
-          />
-      </div>
-  );
-
   return (
     <div className="flex h-screen w-full overflow-hidden font-sans bg-[#f3f4f6] dark:bg-[#09090b] text-gray-900 dark:text-gray-100 transition-colors duration-700 ease-in-out relative selection:bg-accent/30 selection:text-accent-900">
       
@@ -691,6 +747,20 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
           <div className="w-full px-3 flex flex-col gap-3 mt-auto">
              <div className="w-full h-px bg-gray-200 dark:bg-gray-800"></div>
              
+             {/* Voice Mode Button (Desktop) */}
+             <div className="relative group w-full flex justify-center">
+                <button 
+                    onClick={() => setShowLiveSession(true)}
+                    className="p-3 rounded-xl transition-colors flex justify-center w-full text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20"
+                >
+                    <Mic size={20} />
+                </button>
+                <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-md z-50">
+                    Live Voice
+                    <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
+                </div>
+             </div>
+
              <div className="relative group w-full flex justify-center">
                 <button 
                     onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
@@ -774,6 +844,12 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
            <NavButton mode={ViewMode.SETTINGS} icon={Sliders} label="Character Settings" />
            <NavButton mode={ViewMode.WORLDBUILDING} icon={Globe} label="Worldbuilding" />
            <button 
+                onClick={() => setShowLiveSession(true)}
+                className="p-3 text-gray-400 hover:text-green-500 rounded-xl transition-colors"
+           >
+                <Mic size={20} />
+           </button>
+           <button 
                onClick={() => setIsSettingsOpen(!isSettingsOpen)} 
                className={`p-3 rounded-xl transition-colors ${isSettingsOpen ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'}`}
            >
@@ -850,7 +926,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                             className={`relative p-1 rounded-full transition-all duration-300 ${isSidebarOpen ? 'bg-accent shadow-[0_0_15px_rgba(234,179,8,0.5)]' : 'bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700'}`}
                             title={isSidebarOpen ? "Close Geny" : "Open Geny"}
                       >
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-white dark:bg-gray-900 ${isSidebarOpen ? 'text-accent' : 'text-gray-500 dark:text-gray-400'}`}>
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-white dark:bg-gray-900 ${isSidebarOpen ? 'text-accent' : 'text-gray-500 dark:text-gray-400'} ${!isSidebarOpen ? 'animate-pulse-glow' : ''}`}>
                              <Bot size={18} />
                           </div>
                           {/* Online indicator */}
@@ -899,7 +975,6 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                               <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8 h-full overflow-y-auto lg:overflow-hidden">
                                   
                                   {/* Left Column - Form Inputs */}
-                                  {/* Order-2 on mobile so AI tools can be Order-1 if desired, or Order-2 to be standard */}
                                   <div className="lg:col-span-2 lg:h-full lg:overflow-y-auto pr-2 pb-6 lg:pb-20 order-2 lg:order-1">
                                       <section className="space-y-4 mb-8">
                                           <h2 className="font-serif text-2xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
@@ -938,6 +1013,8 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                             label="Personality"
                                             name="personality"
                                             value={state.settings.personality}
+                                            onChange={handleSettingsChange}
+                                            onExpand={setExpandedField}
                                             className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-32 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none"
                                             placeholder="Describe how they act, think, and feel..."
                                           />
@@ -948,46 +1025,83 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                             label="Backstory"
                                             name="backstory"
                                             value={state.settings.backstory}
+                                            onChange={handleSettingsChange}
+                                            onExpand={setExpandedField}
                                             className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-40 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none"
                                             placeholder="Where do they come from? What shaped them?"
                                           />
                                       </section>
 
-                                      <section className="space-y-2 mb-20">
+                                      <section className="space-y-2 mb-6">
                                           <ExpandableInput 
                                             label="Biography"
                                             name="biography"
                                             value={state.settings.biography}
+                                            onChange={handleSettingsChange}
+                                            onExpand={setExpandedField}
                                             className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-24 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none"
                                             placeholder="Short bio for the Talkie app card..."
                                           />
                                       </section>
+
+                                      {/* MOVED OPTIMIZED PROMPT GENERATOR HERE */}
+                                      <section className="space-y-2 mb-20">
+                                          <div className="flex justify-between items-center mb-2">
+                                              <label className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-2">
+                                                  <Terminal size={14} className="text-accent" /> Optimized Talkie Prompt
+                                              </label>
+                                              {state.generatedIntro && (
+                                                  <button 
+                                                      onClick={handleCopyPrompt}
+                                                      className="text-gray-400 hover:text-accent p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                                      title="Copy Prompt"
+                                                  >
+                                                      {isPromptCopied ? <Check size={14} className="text-green-500"/> : <Copy size={14}/>}
+                                                  </button>
+                                              )}
+                                          </div>
+                                          <textarea 
+                                              readOnly
+                                              value={state.generatedIntro || ''}
+                                              placeholder="Click 'Generate' to create a sanitized, structured, and optimized Talkie prompt based on your settings and draft."
+                                              className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-48 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none text-sm leading-relaxed"
+                                          />
+                                          <button 
+                                              onClick={handleOptimizedPromptGeneration} disabled={isGenerating}
+                                              className="w-full mt-2 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-accent/20 transition-all"
+                                          >
+                                              {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                                              Generate / Optimize Prompt
+                                          </button>
+                                      </section>
                                   </div>
 
                                   {/* Right Column - AI Tools & Analytics */}
-                                  {/* Mobile: Order-1 (Top) so users can easily generate. Desktop: Order-2 (Right side) */}
-                                  <div className="flex lg:col-span-1 flex-col gap-6 pb-20 lg:pb-6 lg:h-full lg:overflow-hidden mt-6 lg:mt-0 order-1 lg:order-2 shrink-0">
-                                      {/* AI Box */}
-                                      <div className="shrink-0 bg-gradient-to-br from-white to-gray-50 dark:from-gray-800 dark:to-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700">
-                                          <div className="flex items-center justify-between mb-4">
-                                              <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                                                  <Bot size={18} className="text-accent" /> AI Prompt
-                                              </h3>
-                                              <button 
-                                                onClick={handleGenClick} disabled={isGenerating}
-                                                className="text-xs bg-accent text-white px-3 py-1.5 rounded-full hover:bg-amber-700 disabled:opacity-50 flex items-center gap-1"
-                                              >
-                                                  {isGenerating ? <Loader2 size={12} className="animate-spin" /> : <Feather size={12} />}
-                                                  Generate
-                                              </button>
+                                  <div className="flex lg:col-span-1 flex-col gap-4 pb-20 lg:pb-6 lg:h-full lg:overflow-y-auto mt-6 lg:mt-0 order-1 lg:order-2 shrink-0 scrollbar-hide">
+                                      
+                                      {/* TALKIE CHARACTER CREATOR (Renamed & Restyled) */}
+                                      <div className="shrink-0 bg-white dark:bg-gray-800/50 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                                          <div className="flex items-center gap-2 mb-3">
+                                              <Bot size={16} className="text-accent" />
+                                              <h3 className="font-bold text-gray-900 dark:text-white text-sm uppercase tracking-wider">Talkie Character Creator</h3>
                                           </div>
-                                          <div className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-black/20 p-4 rounded-xl border border-gray-100 dark:border-gray-700 min-h-[100px] max-h-[200px] overflow-y-auto whitespace-pre-wrap leading-relaxed italic">
-                                              {state.generatedIntro || "Click 'Generate' to auto-create a character, draft intro, and world entries."}
-                                          </div>
+                                          <textarea 
+                                            value={aiCreatorInput}
+                                            onChange={(e) => setAiCreatorInput(e.target.value)}
+                                            placeholder="Describe the character you want (e.g. A Talkior named NotSoDangerous stuck in 2025 who loves coffee)..."
+                                            className="w-full text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 mb-3 h-24 resize-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
+                                          />
+                                          <button 
+                                            onClick={handleAICreatorAction}
+                                            disabled={isGenerating || !aiCreatorInput.trim()}
+                                            className="w-full py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-accent/20"
+                                          >
+                                              {isGenerating ? 'Creating...' : 'Create Character'}
+                                          </button>
                                       </div>
 
-                                      {/* Tone Analyzer - Fills remaining space on desktop */}
-                                      <div className="flex-1 min-h-0 overflow-hidden">
+                                      {/* TONE ANALYZER */}
+                                      <div className="flex-1 min-h-[400px]">
                                         <ToneAnalyzer 
                                             draft={state.draft} 
                                             result={analysisResult} 
@@ -1076,12 +1190,14 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                       </div>
                   )}
 
-                  <LiveSession 
-                    onClose={() => {}} 
-                    onToolCall={handleToolCall} 
-                    currentContext={state} 
-                    voiceName={appSettings.voiceLive} 
-                  />
+                  {showLiveSession && (
+                      <LiveSession 
+                        onClose={() => setShowLiveSession(false)} 
+                        onToolCall={handleToolCall} 
+                        currentContext={state} 
+                        voiceName={appSettings.voiceLive} 
+                      />
+                  )}
               </div>
           </div>
 
@@ -1097,6 +1213,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                     draftContext={state.draft} 
                     onToolCall={handleToolCall} 
                     debugMode={appSettings.debugMode}
+                    onStartLive={() => setShowLiveSession(true)}
                 />
               </div>
           </div>
@@ -1129,6 +1246,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                     draftContext={state.draft} 
                     onToolCall={handleToolCall} 
                     debugMode={appSettings.debugMode}
+                    onStartLive={() => setShowLiveSession(true)}
                   />
               </div>
           </div>

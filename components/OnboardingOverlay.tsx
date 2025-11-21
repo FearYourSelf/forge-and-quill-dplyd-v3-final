@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { X, ArrowRight, Bot, Mic, Feather, Sliders, Flame, PenTool } from 'lucide-react';
 
@@ -24,7 +25,7 @@ const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({ onClose }) => {
     },
     {
       title: "Draft & Talkie Settings",
-      description: "Switch between 'Draft' to write your story and 'Talkie Settings' to define the character core. Geny works across both tabs.",
+      description: <span>Switch between <span className="text-accent font-bold">Draft</span> to write your story and <span className="text-accent font-bold">Talkie Settings</span> to define the character core. Geny works across both tabs.</span>,
       icon: <div className="flex gap-4"><Feather size={32} className="text-gray-400" /><Sliders size={32} className="text-accent" /></div>
     },
     {

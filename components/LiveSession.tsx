@@ -168,9 +168,12 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
   const isConnectedRef = useRef(false);
 
   useEffect(() => {
-    return () => {
-      cleanup();
-    };
+      // Auto-connect when component mounts (as it's now triggered by the sidebar button)
+      startSession();
+      
+      return () => {
+        cleanup();
+      };
   }, []);
 
   const cleanup = () => {
@@ -186,15 +189,10 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
-    setStatus('idle');
+    // Notify parent if needed, or just unmount
   };
 
   const startSession = async () => {
-    // Reset state if retrying
-    if (status === 'error') {
-        cleanup();
-    }
-
     setStatus('connecting');
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -241,13 +239,12 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
           CONTEXT: ${contextStr}
           
           RULES:
-          1. BE PROACTIVE & IMMEDIATELY GREET THE USER: As soon as the session starts, you MUST introduce yourself as Geny and warmly welcome the user using the voice provided.
-             Example Greeting: "Hello! I'm Geny, ready to help you build your next amazing Talkie character. What ideas are we playing with today?"
-          2. Do not wait for the user to speak first. Speak immediately upon connection.
-          3. BE DYNAMIC: Suggest ideas, ask follow-up questions, and be enthusiastic.
-          4. If the user asks to create a NEW character or do a full overhaul, you MUST use the 'createFullCharacter' tool. Do NOT update fields one by one.
-          5. If the user asks to update just the draft, use updateDraft.
-          6. If the user asks to update character details, use updateCharacterProfile.
+          1. BE CHILL: Introduce yourself briefly as Geny. Don't be pushy.
+             Example: "Hey, it's Geny. What's on your mind for this character?"
+          2. BE LAID BACK: Don't ask "What's next?" constantly. Let the user lead.
+          3. If the user asks to create a NEW character or do a full overhaul, you MUST use the 'createFullCharacter' tool.
+          4. If the user asks to update just the draft, use updateDraft.
+          5. If the user asks to update character details, use updateCharacterProfile.
           `,
         },
         callbacks: {
@@ -319,6 +316,7 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
           },
           onclose: () => {
             isConnectedRef.current = false;
+            // Only set to idle if we aren't already unmounted by parent
             setStatus('idle');
           },
           onerror: (err) => {
@@ -335,25 +333,10 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
     }
   };
 
-  // Start Button (Idle)
-  if (status === 'idle') {
-      return (
-        <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-50 animate-in zoom-in fade-in slide-in-from-bottom-4 duration-500">
-            <button
-                onClick={startSession}
-                className="flex items-center gap-3 px-6 py-3 bg-accent hover:bg-amber-700 text-white rounded-full shadow-lg transition-all hover:scale-105 font-medium animate-pulse-glow"
-            >
-                <Mic size={20} />
-                <span>Start Brainstorm</span>
-            </button>
-        </div>
-      );
-  }
-
   // Loading State
   if (status === 'connecting') {
       return (
-        <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-50 animate-in zoom-in fade-in duration-300">
+        <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-50 animate-in zoom-in fade-in duration-300 pointer-events-none">
              <div className="bg-white dark:bg-surface-dark px-6 py-3 rounded-full shadow-xl border border-gray-100 dark:border-gray-700 flex items-center gap-3">
                 <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
                 <span className="text-sm font-medium text-gray-600 dark:text-gray-300">Connecting to Geny...</span>
@@ -364,14 +347,14 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
 
   // Active Capsule Interface
   return (
-    <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-50 flex flex-col items-center gap-2 w-full max-w-md px-4 animate-in zoom-in fade-in slide-in-from-bottom-8 duration-500 ease-out">
+    <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-[150] flex flex-col items-center gap-2 w-full max-w-md px-4 animate-in zoom-in fade-in slide-in-from-bottom-8 duration-500 ease-out">
         
         {/* The Dynamic Capsule */}
         <div className="w-full bg-white/90 dark:bg-surface-dark/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/20 dark:border-white/10 flex items-center p-2 gap-4 h-20 relative overflow-hidden ring-1 ring-black/5 dark:ring-white/5">
             
             {/* Close Button */}
             <button 
-                onClick={cleanup}
+                onClick={onClose}
                 className="p-3 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-red-500 transition-colors shrink-0 z-10"
             >
                 <X size={20} />
@@ -381,7 +364,7 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
             <div className="flex-1 flex flex-col justify-center h-full relative">
                  {/* Labels */}
                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-1 px-1">
-                    <span>{voiceName === 'Aoede' ? 'Geny (Official)' : voiceName}</span>
+                    <span>{voiceName === 'Aoede' ? 'Geny' : voiceName}</span>
                     <span>You</span>
                  </div>
 
@@ -400,7 +383,7 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentC
         {status === 'error' && (
             <button 
                 onClick={startSession}
-                className="bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 animate-in fade-in shadow-sm hover:bg-red-200 dark:hover:bg-red-900/70 transition-colors"
+                className="bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 animate-in fade-in shadow-sm hover:bg-red-200 dark:hover:bg-red-900/70 transition-colors pointer-events-auto"
             >
                 <AlertCircle size={12} />
                 Service Unavailable. Tap to Retry.

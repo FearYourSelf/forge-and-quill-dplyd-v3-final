@@ -1,6 +1,7 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Wand2, SpellCheck, Repeat, Loader2, Undo, Redo, ChevronRight, Info, Eye, EyeOff } from 'lucide-react';
+import { Wand2, SpellCheck, Repeat, Loader2, Undo, Redo, ChevronRight, Info, Eye, EyeOff, GripVertical } from 'lucide-react';
 import { getEditorSuggestions } from '../services/geminiService';
 import { SuggestionTask, Highlight } from '../types';
 
@@ -17,13 +18,20 @@ interface EditorProps {
 const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canUndo, canRedo, highlights = [] }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+  
+  // Menu State
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [menuOffset, setMenuOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeSubmenu, setActiveSubmenu] = useState<'none' | 'rewrite' | 'synonyms'>('none');
   const [synonymList, setSynonymList] = useState<string[]>([]);
   const [isInspectMode, setIsInspectMode] = useState(false);
   
+  // Dragging State
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+
   // Highlight Tooltip State
   const [hoveredHighlight, setHoveredHighlight] = useState<Highlight | null>(null);
   const [mousePos, setMousePos] = useState<{x: number, y: number} | null>(null);
@@ -36,23 +44,75 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
     }
   };
 
+  // Helper to measure selection coordinates
+  const measureSelection = (el: HTMLTextAreaElement) => {
+      const div = document.createElement('div');
+      const styles = window.getComputedStyle(el);
+      
+      // Replicate Textarea Styles
+      div.style.position = 'absolute';
+      div.style.top = '-9999px';
+      div.style.left = '-9999px';
+      div.style.visibility = 'hidden';
+      div.style.width = styles.width;
+      div.style.height = 'auto';
+      div.style.font = styles.font;
+      div.style.padding = styles.padding;
+      div.style.paddingTop = styles.paddingTop;
+      div.style.paddingLeft = styles.paddingLeft;
+      div.style.border = styles.border;
+      div.style.lineHeight = styles.lineHeight;
+      div.style.whiteSpace = 'pre-wrap';
+      div.style.wordWrap = 'break-word';
+      div.style.fontFamily = styles.fontFamily;
+      div.style.fontSize = styles.fontSize;
+      div.style.letterSpacing = styles.letterSpacing;
+      div.style.boxSizing = styles.boxSizing;
+
+      // Insert text up to selection end
+      const text = el.value.substring(0, el.selectionEnd);
+      div.textContent = text;
+      
+      // Marker
+      const span = document.createElement('span');
+      span.textContent = '|';
+      div.appendChild(span);
+      
+      document.body.appendChild(div);
+      
+      const top = span.offsetTop;
+      const left = span.offsetLeft;
+      const lineHeight = parseInt(styles.lineHeight) || 24;
+
+      document.body.removeChild(div);
+      
+      return { top, left, lineHeight };
+  };
+
   const handleSelect = () => {
     const el = textareaRef.current;
-    if (!el || isInspectMode) return;
+    if (!el || isInspectMode || isDragging) return;
 
-    // Small delay to ensure selection is completed
+    // Delay to allow selection to finalize
     setTimeout(() => {
         if (el.selectionStart !== el.selectionEnd) {
             const text = el.value.substring(el.selectionStart, el.selectionEnd);
             if (!text.trim()) return;
+
+            const coords = measureSelection(el);
 
             setSelection({
                 start: el.selectionStart,
                 end: el.selectionEnd,
                 text
             });
-            // Show menu fixed at top center of the component
-            setMenuPosition({ top: 0, left: 0 }); 
+            
+            // Position under the selection end
+            setMenuPosition({ 
+                top: coords.top + coords.lineHeight + 10, // 10px buffer
+                left: Math.min(coords.left, el.clientWidth - 250) // Prevent overflow right
+            }); 
+            setMenuOffset({ x: 0, y: 0 }); // Reset Drag Offset
             setActiveSubmenu('none');
             setSynonymList([]);
         } else {
@@ -61,6 +121,53 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
         }
     }, 10);
   };
+
+  // Drag Logic
+  const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(true);
+      const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+      const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+      setDragStart({ x: clientX, y: clientY });
+  };
+
+  useEffect(() => {
+      const handleDrag = (e: MouseEvent | TouchEvent) => {
+          if (!isDragging || !dragStart) return;
+          
+          const clientX = 'touches' in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
+          const clientY = 'touches' in e ? e.touches[0].clientY : (e as MouseEvent).clientY;
+          
+          const deltaX = clientX - dragStart.x;
+          const deltaY = clientY - dragStart.y;
+          
+          setMenuOffset(prev => ({
+              x: prev.x + deltaX,
+              y: prev.y + deltaY
+          }));
+          
+          setDragStart({ x: clientX, y: clientY });
+      };
+
+      const handleDragEnd = () => {
+          setIsDragging(false);
+          setDragStart(null);
+      };
+
+      if (isDragging) {
+          window.addEventListener('mousemove', handleDrag);
+          window.addEventListener('touchmove', handleDrag, { passive: false });
+          window.addEventListener('mouseup', handleDragEnd);
+          window.addEventListener('touchend', handleDragEnd);
+      }
+      return () => {
+          window.removeEventListener('mousemove', handleDrag);
+          window.removeEventListener('touchmove', handleDrag);
+          window.removeEventListener('mouseup', handleDragEnd);
+          window.removeEventListener('touchend', handleDragEnd);
+      };
+  }, [isDragging, dragStart]);
 
   const handleApplyText = (newText: string) => {
       if (!selection) return;
@@ -127,7 +234,7 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
       sorted.forEach((h, i) => {
           if (h.start < lastIndex) return; 
           
-          // Non-highlighted segment (Apply fade if in focus mode)
+          // Non-highlighted segment
           const plainText = content.substring(lastIndex, h.start);
           if (plainText) {
               fragments.push(
@@ -139,13 +246,10 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
           
           const text = content.substring(h.start, h.end);
           
-          // More transparent background for realistic effect
-          // Grammar (Red) or Emotion (Blue)
           const bgColor = h.type === 'grammar' 
             ? 'rgba(248, 113, 113, 0.25)' 
             : 'rgba(56, 189, 248, 0.25)';
           
-          // Border for structure
           const borderColor = h.type === 'grammar' 
             ? 'rgba(248, 113, 113, 0.6)' 
             : 'rgba(56, 189, 248, 0.6)';
@@ -190,7 +294,7 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
         {/* Toolbar Overlay */}
         <div className="sticky top-0 z-20 bg-paper/90 dark:bg-paper-dark/90 backdrop-blur-md px-8 py-2 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center transition-colors duration-700">
              
-             {/* Analysis Legend - Only Visible in Inspect Mode */}
+             {/* Analysis Legend */}
              <div className={`flex items-center gap-4 text-xs font-medium text-gray-500 dark:text-gray-400 transition-opacity duration-300 ${isInspectMode ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                 <div className="flex items-center gap-1.5">
                     <div className="w-3 h-3 rounded bg-sky-400/50 border border-sky-300 dark:border-sky-700"></div>
@@ -228,7 +332,7 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
              </div>
         </div>
 
-        {/* Tooltip - Rendered via Portal to escape parent scaling transforms */}
+        {/* Tooltip - Rendered via Portal */}
         {isInspectMode && hoveredHighlight && mousePos && createPortal(
              <div 
                 className="fixed z-[9999] px-3 py-2 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-xl pointer-events-none animate-in fade-in duration-150"
@@ -240,72 +344,91 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
              document.body
         )}
 
-        {/* Floating Menu (Text Edit) */}
-        {menuPosition && selection && !isInspectMode && (
-            <div className="absolute top-16 left-1/2 transform -translate-x-1/2 z-40 bg-white dark:bg-surface-dark shadow-xl rounded-xl border border-gray-200 dark:border-gray-700 flex flex-col animate-in fade-in zoom-in duration-200 overflow-hidden text-gray-800 dark:text-gray-200">
-                {isProcessing ? (
-                     <div className="px-4 py-3 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 min-w-[150px] justify-center">
-                        <Loader2 className="animate-spin" size={16} />
-                        Refining...
-                     </div>
-                ) : (
-                    <>
-                        {activeSubmenu === 'none' && (
-                            <div className="flex items-center p-1">
-                                <button 
-                                    onClick={() => fetchSuggestion('grammar')}
-                                    className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
-                                >
-                                    <SpellCheck size={16} className="text-blue-500 dark:text-blue-400" />
-                                    Fix
-                                </button>
-                                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
-                                <button 
-                                     onClick={() => setActiveSubmenu('rewrite')}
-                                     className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
-                                >
-                                    <Wand2 size={16} className="text-purple-500 dark:text-purple-400" />
-                                    Rewrite
-                                    <ChevronRight size={14} className="text-gray-400" />
-                                </button>
-                                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
-                                <button 
-                                     onClick={() => fetchSuggestion('synonyms')}
-                                     className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
-                                >
-                                    <Repeat size={16} className="text-green-500 dark:text-green-400" />
-                                    Synonyms
-                                </button>
-                            </div>
-                        )}
-
-                        {activeSubmenu === 'rewrite' && (
-                             <div className="flex flex-col p-1 w-40">
-                                <button onClick={() => fetchSuggestion('rewrite_short')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Shorten</button>
-                                <button onClick={() => fetchSuggestion('rewrite_detailed')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Detailed</button>
-                                <button onClick={() => fetchSuggestion('rewrite_formal')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Formal</button>
-                                <button onClick={() => fetchSuggestion('rewrite_casual')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Casual</button>
-                                <div className="h-px bg-gray-100 dark:bg-gray-700 my-1"></div>
-                                <button onClick={() => setActiveSubmenu('none')} className="px-3 py-1 text-center text-xs text-gray-400 hover:text-gray-600">Back</button>
-                             </div>
-                        )}
-
-                         {activeSubmenu === 'synonyms' && (
-                             <div className="flex flex-col p-1 w-40">
-                                {synonymList.map((word, i) => (
-                                    <button key={i} onClick={() => handleApplyText(word)} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg font-medium">{word}</button>
-                                ))}
-                                <div className="h-px bg-gray-100 dark:bg-gray-700 my-1"></div>
-                                <button onClick={() => setActiveSubmenu('none')} className="px-3 py-1 text-center text-xs text-gray-400 hover:text-gray-600">Back</button>
-                             </div>
-                        )}
-                    </>
-                )}
-            </div>
-        )}
-
         <div className="max-w-3xl mx-auto px-8 pb-12 w-full flex-1 relative">
-            {/* Highlighting Underlay / Readable Text Layer in Inspect Mode */}
+            
+            {/* Floating Menu (Text Edit) - Inside Relative Container */}
+            {menuPosition && selection && !isInspectMode && (
+                <div 
+                    className="absolute z-50 bg-white dark:bg-surface-dark shadow-xl rounded-xl border border-gray-200 dark:border-gray-700 flex items-stretch animate-in fade-in zoom-in duration-200 overflow-hidden text-gray-800 dark:text-gray-200"
+                    style={{ 
+                        top: `${menuPosition.top + menuOffset.y}px`, 
+                        left: `${menuPosition.left + menuOffset.x}px` 
+                    }}
+                >
+                    {/* Drag Handle */}
+                    <div 
+                        className="w-6 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex items-center justify-center cursor-move hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors touch-none"
+                        onMouseDown={handleDragStart}
+                        onTouchStart={handleDragStart}
+                    >
+                        <GripVertical size={14} className="text-gray-400" />
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex flex-col">
+                        {isProcessing ? (
+                            <div className="px-4 py-3 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 min-w-[150px] justify-center">
+                                <Loader2 className="animate-spin" size={16} />
+                                Refining...
+                            </div>
+                        ) : (
+                            <>
+                                {activeSubmenu === 'none' && (
+                                    <div className="flex items-center p-1">
+                                        <button 
+                                            onClick={() => fetchSuggestion('grammar')}
+                                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
+                                        >
+                                            <SpellCheck size={16} className="text-blue-500 dark:text-blue-400" />
+                                            Fix
+                                        </button>
+                                        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
+                                        <button 
+                                            onClick={() => setActiveSubmenu('rewrite')}
+                                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
+                                        >
+                                            <Wand2 size={16} className="text-purple-500 dark:text-purple-400" />
+                                            Rewrite
+                                            <ChevronRight size={14} className="text-gray-400" />
+                                        </button>
+                                        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
+                                        <button 
+                                            onClick={() => fetchSuggestion('synonyms')}
+                                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
+                                        >
+                                            <Repeat size={16} className="text-green-500 dark:text-green-400" />
+                                            Synonyms
+                                        </button>
+                                    </div>
+                                )}
+
+                                {activeSubmenu === 'rewrite' && (
+                                    <div className="flex flex-col p-1 w-40">
+                                        <button onClick={() => fetchSuggestion('rewrite_short')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Shorten</button>
+                                        <button onClick={() => fetchSuggestion('rewrite_detailed')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Detailed</button>
+                                        <button onClick={() => fetchSuggestion('rewrite_formal')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Formal</button>
+                                        <button onClick={() => fetchSuggestion('rewrite_casual')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Casual</button>
+                                        <div className="h-px bg-gray-100 dark:bg-gray-700 my-1"></div>
+                                        <button onClick={() => setActiveSubmenu('none')} className="px-3 py-1 text-center text-xs text-gray-400 hover:text-gray-600">Back</button>
+                                    </div>
+                                )}
+
+                                {activeSubmenu === 'synonyms' && (
+                                    <div className="flex flex-col p-1 w-40">
+                                        {synonymList.map((word, i) => (
+                                            <button key={i} onClick={() => handleApplyText(word)} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg font-medium">{word}</button>
+                                        ))}
+                                        <div className="h-px bg-gray-100 dark:bg-gray-700 my-1"></div>
+                                        <button onClick={() => setActiveSubmenu('none')} className="px-3 py-1 text-center text-xs text-gray-400 hover:text-gray-600">Back</button>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Highlighting Underlay */}
             <div 
                 ref={backdropRef}
                 className={`absolute inset-0 px-8 pb-12 w-full h-full whitespace-pre-wrap font-serif text-lg leading-relaxed overflow-hidden transition-colors duration-700 ${isInspectMode ? 'text-ink dark:text-ink-dark pointer-events-auto z-10' : 'text-transparent pointer-events-none'}`}
@@ -320,6 +443,8 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
                 value={content}
                 onChange={(e) => onChange(e.target.value)}
                 onSelect={handleSelect}
+                onTouchEnd={handleSelect}
+                onKeyUp={handleSelect}
                 onScroll={handleScroll}
                 placeholder="Start forging your story here..."
                 className={`absolute inset-0 px-8 pb-12 w-full h-full resize-none bg-transparent border-none focus:ring-0 focus:outline-none font-serif text-lg text-ink dark:text-ink-dark leading-relaxed placeholder:text-gray-300 dark:placeholder:text-gray-700 selection:bg-amber-200 dark:selection:bg-amber-900 selection:text-amber-900 dark:selection:text-amber-100 transition-colors duration-700 ${isInspectMode ? 'opacity-0 pointer-events-none' : ''}`}
@@ -332,3 +457,4 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
 };
 
 export default Editor;
+    

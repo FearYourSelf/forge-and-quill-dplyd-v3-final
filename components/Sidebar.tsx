@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Image as ImageIcon, Loader2, Bot, AlertCircle } from 'lucide-react';
+import { Send, Image as ImageIcon, Loader2, Bot, AlertCircle, Mic } from 'lucide-react';
 import { chatWithGeminiStream } from '../services/geminiService';
 import { ChatMessage, ToolCallHandler } from '../types';
 
@@ -9,6 +9,7 @@ interface SidebarProps {
   draftContext: string;
   onToolCall: ToolCallHandler;
   debugMode?: boolean;
+  onStartLive: () => void;
 }
 
 const FALLBACK_MESSAGES = [
@@ -68,14 +69,14 @@ const FormattedText: React.FC<{ text: string }> = ({ text }) => {
   );
 };
 
-const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, debugMode = false }) => {
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, debugMode = false, onStartLive }) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
       role: 'model',
-      text: "Hi! I'm Geny, your Talkie creation partner. I can write parts of the story for you or update your Talkie settings. Just ask!"
+      text: "Hi! I'm Geny. I can write parts of the story or update your settings. Just ask!"
     }
   ]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -181,9 +182,11 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
   // We no longer return null if !isOpen, so parent can animate width/transform.
   return (
     <div className="flex flex-col h-full bg-white dark:bg-surface-dark shadow-none z-40 transition-colors duration-700 relative w-full">
-      <div className="p-4 border-b border-gray-100 dark:border-gray-800 bg-paper dark:bg-surface-dark flex items-center gap-2 transition-colors duration-700">
-        <Bot className="text-accent" size={20} />
-        <h2 className="font-serif font-bold text-gray-800 dark:text-gray-100">Geny</h2>
+      <div className="p-4 border-b border-gray-100 dark:border-gray-800 bg-paper dark:bg-surface-dark flex items-center justify-between transition-colors duration-700">
+        <div className="flex items-center gap-2">
+            <Bot className="text-accent" size={20} />
+            <h2 className="font-serif font-bold text-gray-800 dark:text-gray-100">Geny</h2>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white dark:bg-surface-dark transition-colors duration-700">
