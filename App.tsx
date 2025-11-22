@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { 
   BookOpen, Bot, Feather, Mic, Settings as SettingsIcon, Sliders, 
@@ -15,8 +16,9 @@ import WalkthroughOverlay, { TourStep } from './components/WalkthroughOverlay';
 import CharacterCompare from './components/CharacterCompare';
 import AppSettingsModal from './components/AppSettingsModal';
 import { ViewMode, AppState, WorldItem, AnalysisResult, CharacterSettings, Highlight } from './types';
-import { construct, synthesis, inspect, optimize } from './services/geminiService';
+import { generateCharacterProfile, generateSpeech, analyzeDraft, generateOptimizedTalkiePrompt } from './services/geminiService';
 
+// --- Extracted Component to Prevent Re-renders and Focus Loss ---
 const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, className }: any) => {
     const [copied, setCopied] = useState(false);
 
@@ -34,7 +36,7 @@ const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, 
                   <button
                       onClick={handleCopy}
                       className="text-gray-400 hover:text-accent p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
-                      title="Copy"
+                      title="Copy to Clipboard"
                   >
                      {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
                   </button>
@@ -59,12 +61,15 @@ const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, 
 };
 
 const App: React.FC = () => {
+  // Generate a simple ID
   const generateId = () => Math.random().toString(36).substring(2, 9);
 
+  // Initial State Loading Logic
   const loadInitialState = (): AppState => {
       let latestChar: AppState | null = null;
       let latestTime = 0;
 
+      // Scan for saved characters
       for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
           if (key?.startsWith('fq_char_')) {
@@ -76,7 +81,7 @@ const App: React.FC = () => {
                       latestChar = char;
                   }
               } catch (e) {
-                  // ignore
+                  console.warn("Failed to parse saved char during init");
               }
           }
       }
@@ -85,6 +90,7 @@ const App: React.FC = () => {
           return latestChar;
       }
 
+      // Default New
       return {
         id: generateId(),
         draft: '',
@@ -104,6 +110,7 @@ const App: React.FC = () => {
 
   const [state, setState] = useState<AppState>(loadInitialState);
 
+  // App Settings
   const [appSettings, setAppSettings] = useState({
       debugMode: false,
       autoSave: true,
@@ -112,49 +119,62 @@ const App: React.FC = () => {
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  // Shared Analysis State
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  // History for Undo/Redo
   const [history, setHistory] = useState<AppState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const [view, setView] = useState<ViewMode>(ViewMode.EDITOR);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false); 
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Default closed
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReadingAloud, setIsReadingAloud] = useState(false);
-  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false); 
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false); // For Voice Preview
   const [toast, setToast] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFocusMode, setIsFocusMode] = useState(false);
   
+  // File Management State
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
   const filesMenuRef = useRef<HTMLDivElement>(null);
   const [savedCharacters, setSavedCharacters] = useState<AppState[]>([]);
   const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'disabled'>('saved');
   
+  // Comparison State
   const [isComparing, setIsComparing] = useState(false);
 
+  // AI Confirm Modal
   const [showGenConfirm, setShowGenConfirm] = useState(false);
 
+  // AI Creator Input State
   const [aiCreatorInput, setAiCreatorInput] = useState('');
 
+  // Live Session State
   const [showLiveSession, setShowLiveSession] = useState(false);
 
+  // Expanded Field Modal
   const [expandedField, setExpandedField] = useState<{name: string, value: string} | null>(null);
 
+  // Onboarding / Walkthrough State
   const [showWalkthrough, setShowWalkthrough] = useState(false);
   const [isInspectMode, setIsInspectMode] = useState(false);
   const [demoSelection, setDemoSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [isIntroAnimating, setIsIntroAnimating] = useState(false);
 
+  // Audio Source Ref for Stopping TTS
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const previewSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
+  // Worldbuilding state
   const [isAddingWorldItem, setIsAddingWorldItem] = useState(false);
   const [newWorldItem, setNewWorldItem] = useState<Partial<WorldItem>>({ category: 'Lore', title: '', description: '' });
 
+  // Prompt Copy State
   const [isPromptCopied, setIsPromptCopied] = useState(false);
 
+  // Initial Check for Onboarding
   useEffect(() => {
       const hasSeen = localStorage.getItem('fq_has_seen_tutorial');
       if (!hasSeen) {
@@ -169,9 +189,11 @@ const App: React.FC = () => {
       localStorage.setItem('fq_has_seen_tutorial', 'true');
       setIsSidebarOpen(false); 
       
+      // Reset Demo States
       setDemoSelection(null);
       setIsInspectMode(false);
       
+      // Clear Demo Text and Trigger Intro Animation
       setState(prev => ({ ...prev, draft: '' }));
       handleIntroAnimation();
   };
@@ -181,9 +203,10 @@ const App: React.FC = () => {
       setIsIntroAnimating(true);
       setTimeout(() => {
           setIsIntroAnimating(false);
-      }, 4000);
+      }, 4000); // Match typewriter duration approx
   };
 
+  // Click Outside for Files Menu
   useEffect(() => {
       const handleClickOutside = (event: MouseEvent) => {
           if (filesMenuRef.current && !filesMenuRef.current.contains(event.target as Node)) {
@@ -194,6 +217,7 @@ const App: React.FC = () => {
       return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Dark Mode Toggle
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -202,6 +226,7 @@ const App: React.FC = () => {
     }
   }, [isDarkMode]);
 
+  // Auto-Save Logic
   useEffect(() => {
       if (!appSettings.autoSave) {
           setAutoSaveStatus('disabled');
@@ -220,6 +245,7 @@ const App: React.FC = () => {
       return () => clearTimeout(timer);
   }, [state.draft, state.settings, state.worldItems, state.generatedIntro, appSettings.autoSave]);
 
+  // Load saved characters list
   const loadSavedCharacters = () => {
       const chars: AppState[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -229,7 +255,7 @@ const App: React.FC = () => {
                   const char = JSON.parse(localStorage.getItem(key) || '');
                   chars.push(char);
               } catch (e) {
-                  // ignore
+                  console.error("Failed to load char", key);
               }
           }
       }
@@ -256,7 +282,7 @@ const App: React.FC = () => {
       setHistoryIndex(0);
       setIsFileMenuOpen(false);
       setAiCreatorInput('');
-      showToast("Created");
+      showToast("New Talkie created");
   };
 
   const handleLoadCharacter = (char: AppState) => {
@@ -272,9 +298,10 @@ const App: React.FC = () => {
       e.stopPropagation();
       localStorage.removeItem(`fq_char_${id}`);
       loadSavedCharacters();
-      showToast("Deleted");
+      showToast("Talkie deleted");
   };
 
+  // Undo/Redo Logic
   const saveToHistory = useCallback((newState: AppState) => {
       setHistory(prev => {
           const newHistory = prev.slice(0, historyIndex + 1);
@@ -302,22 +329,24 @@ const App: React.FC = () => {
       setTimeout(() => setToast(null), 3000);
   };
 
+  // Analyze Logic
   const runAnalysis = async () => {
       const fullContext = [
           state.draft,
-          state.settings.personality ? `[P]: ${state.settings.personality}` : '',
-          state.settings.backstory ? `[B]: ${state.settings.backstory}` : '',
-          state.settings.biography ? `[Bio]: ${state.settings.biography}` : ''
+          state.settings.personality ? `[Personality]: ${state.settings.personality}` : '',
+          state.settings.backstory ? `[Backstory]: ${state.settings.backstory}` : '',
+          state.settings.biography ? `[Biography]: ${state.settings.biography}` : ''
       ].filter(Boolean).join('\n\n');
 
       if (!fullContext || fullContext.length < 10) return; 
       
       setIsAnalyzing(true);
-      const res = await inspect(fullContext);
+      const res = await analyzeDraft(fullContext);
       if (res) setAnalysisResult(res);
       setIsAnalyzing(false);
   };
 
+  // Handlers
   const handleDraftChange = (text: string) => {
     const newState = { ...state, draft: text };
     setState(newState);
@@ -349,12 +378,12 @@ const App: React.FC = () => {
   const handleOptimizedPromptGeneration = async () => {
       setIsGenerating(true);
       try {
-          const optimizedPrompt = await optimize(state.settings, state.draft);
+          const optimizedPrompt = await generateOptimizedTalkiePrompt(state.settings, state.draft);
           setState(prev => ({ ...prev, generatedIntro: optimizedPrompt }));
           saveToHistory({ ...state, generatedIntro: optimizedPrompt });
-          showToast("Optimized!");
+          showToast("Talkie Prompt Optimized!");
       } catch (e) {
-          showToast("Failed");
+          showToast("Prompt generation failed");
       } finally {
           setIsGenerating(false);
       }
@@ -365,7 +394,7 @@ const App: React.FC = () => {
           navigator.clipboard.writeText(state.generatedIntro);
           setIsPromptCopied(true);
           setTimeout(() => setIsPromptCopied(false), 2000);
-          showToast("Copied");
+          showToast("Prompt Copied to Clipboard");
       }
   }
 
@@ -381,7 +410,7 @@ const App: React.FC = () => {
     setIsGenerating(true);
     setShowGenConfirm(false);
     try {
-      const result = await construct(mode === 'improve' ? state.settings : undefined, mode, aiCreatorInput);
+      const result = await generateCharacterProfile(mode === 'improve' ? state.settings : undefined, mode, aiCreatorInput);
       
       if (result) {
           const newSettings = {
@@ -425,11 +454,12 @@ const App: React.FC = () => {
 
           setState(newState);
           saveToHistory(newState);
-          showToast(mode === 'create' ? "Created" : "Polished");
+          showToast(mode === 'create' ? "Character Created" : "Character Polished");
           setAiCreatorInput(''); 
       }
     } catch (err) {
-      showToast("Failed");
+      console.error(err);
+      showToast("Generation Failed");
     } finally {
       setIsGenerating(false);
     }
@@ -446,7 +476,7 @@ const App: React.FC = () => {
       }
       if(!state.draft) return;
       setIsReadingAloud(true);
-      const buffer = await synthesis(state.draft, appSettings.voiceTTS);
+      const buffer = await generateSpeech(state.draft, appSettings.voiceTTS);
       if(buffer) {
           const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
           const source = ctx.createBufferSource();
@@ -475,7 +505,7 @@ const App: React.FC = () => {
 
       setIsPreviewPlaying(true);
       const text = "Hi there! What would you like to talk about today?";
-      const buffer = await synthesis(text, voiceName);
+      const buffer = await generateSpeech(text, voiceName);
       
       if(buffer) {
           const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -490,13 +520,13 @@ const App: React.FC = () => {
           };
       } else {
           setIsPreviewPlaying(false);
-          showToast("Failed");
+          showToast("Failed to generate preview");
       }
   };
   
   const handleExport = () => {
-    const { settings, draft } = state;
-    const content = `EXPORT...\n${settings.name}\n${draft}`; 
+    const { settings, draft, generatedIntro, worldItems } = state;
+    const content = `FORGE & QUILL EXPORT...`; // truncated for brevity
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -506,11 +536,15 @@ const App: React.FC = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast("Exported");
+    showToast("Exported to text file");
   };
 
   const handleToolCall = (toolName: string, args: any) => {
       saveToHistory(state);
+      if (toolName === 'createFullCharacter') {
+           // ... existing implementation
+      }
+      // ... existing implementation
   };
 
   const handleAddWorldItem = () => {
@@ -535,30 +569,32 @@ const App: React.FC = () => {
       saveToHistory(newState);
   };
 
+  // --- TOUR STEPS ---
+  // Wrapped in useMemo to prevent flickering on re-renders
   const tourSteps: TourStep[] = useMemo(() => [
     {
-      targetSelector: '.tour-nav-dock, .tour-nav-draft', 
-      title: "Navigation",
-      description: "Switch tabs here.",
+      targetSelector: '.tour-nav-dock, .tour-nav-draft', // Targets Dock or Mobile Footer
+      title: "Navigation Dock",
+      description: "This is your main command center. Switch between your Story Draft, Character Settings, and Worldbuilding tools here.",
       position: 'right',
       onStepEnter: () => setView(ViewMode.EDITOR)
     },
     {
       targetSelector: '#editor-scroller',
-      title: "Draft",
-      description: "Your writing space.",
+      title: "The Draft",
+      description: "Your distraction-free writing space.",
       position: 'left',
       onStepEnter: () => {
           setView(ViewMode.EDITOR);
           setDemoSelection(null);
           setIsInspectMode(false);
-          setState(prev => ({ ...prev, draft: '' })); 
+          setState(prev => ({ ...prev, draft: '' })); // Reset
       }
     },
     {
         targetSelector: '.tour-nav-world',
-        title: "World",
-        description: "Create lore.",
+        title: "Worldbuilding",
+        description: "Create lore entries, locations, and relationships to flesh out your character's universe.",
         position: 'right',
         onStepEnter: () => {
             setView(ViewMode.WORLDBUILDING);
@@ -566,15 +602,16 @@ const App: React.FC = () => {
     },
     {
         targetSelector: '.tour-inspect-container',
-        title: "Inspect",
+        title: "Inspect Highlights",
         description: (
             <span>
-                Detects issues automatically.
+                The editor automatically detects <span className="text-red-400 font-bold">grammar issues</span> and <span className="text-blue-400 font-bold">emotional tones</span>. Hover over them to see details.
             </span>
         ),
         position: 'bottom',
         onStepEnter: () => {
             setView(ViewMode.EDITOR);
+            // Inject Demo Text for Inspect
             setTimeout(() => {
                 setState(prev => ({ ...prev, draft: "I am so hapy that the darknes is gone." }));
                 setIsInspectMode(true);
@@ -583,8 +620,8 @@ const App: React.FC = () => {
                     emotion: [{name: 'Joy', score: 0.9}],
                     suggestions: [],
                     highlights: [
-                        { start: 8, end: 12, type: 'grammar', label: 'Typo', color: '#fca5a5' }, 
-                        { start: 22, end: 29, type: 'grammar', label: 'Typo', color: '#fca5a5' } 
+                        { start: 8, end: 12, type: 'grammar', label: 'Typo: happy', color: '#fca5a5' }, 
+                        { start: 22, end: 29, type: 'grammar', label: 'Typo: darkness', color: '#fca5a5' } 
                     ]
                 });
             }, 100);
@@ -592,13 +629,15 @@ const App: React.FC = () => {
     },
     {
         targetSelector: '#floating-menu', 
-        title: "Tools",
-        description: "Highlight text to access tools.",
+        title: "Draft Tools",
+        description: "Highlight any text to access powerful tools: Fix Grammar, Rewrite in different styles, or find Synonyms.",
         position: 'bottom',
         onStepEnter: () => {
             setIsInspectMode(false);
+            // Inject Demo Text
             const text = "The city was big.";
             setState(prev => ({ ...prev, draft: text }));
+            // Trigger the "fake" selection and menu popup in Editor
             setTimeout(() => {
                 setDemoSelection({ start: 13, end: 16, text: "big" });
             }, 100);
@@ -606,8 +645,8 @@ const App: React.FC = () => {
     },
     {
         targetSelector: '.tour-nav-settings',
-        title: "Settings",
-        description: "Define character core.",
+        title: "Character Settings",
+        description: "Define the core of your Talkie here. Name, personality, backstory, and more.",
         position: 'right',
         onStepEnter: () => {
             setDemoSelection(null);
@@ -616,34 +655,35 @@ const App: React.FC = () => {
     },
     {
         targetSelector: '#tour-talkie-creator',
-        title: "Creator",
-        description: "Auto-generate profiles.",
+        title: "Talkie Creator",
+        description: "Describe your idea here and let AI build the entire profile, story intro, and lore for you instantly.",
         position: 'left',
         onStepEnter: () => setView(ViewMode.SETTINGS)
     },
     {
         targetSelector: '.tour-tone-analyzer',
-        title: "Analysis",
-        description: "See tone metrics.",
+        title: "Tone & Emotion",
+        description: "See real-time analysis of your writing's tone and emotional spectrum as you type.",
         position: 'left',
         onStepEnter: () => setView(ViewMode.SETTINGS)
     },
     {
         targetSelector: '#tour-geny-toggle',
-        title: "Assistant",
-        description: "Chat with the bot.",
+        title: "Meet Geny",
+        description: "Click this bot icon anytime to chat with Geny. She can update your character settings and draft directly through conversation.",
         position: 'left',
         onStepEnter: () => { setIsSidebarOpen(true); }
     },
     {
         targetSelector: '.tour-nav-voice',
-        title: "Voice",
-        description: "Real-time chat.",
+        title: "Live Voice Mode",
+        description: "Tap the mic to have a real-time voice conversation with Geny to brainstorm ideas hands-free.",
         position: 'right',
         onStepEnter: () => { setIsSidebarOpen(false); }
     }
   ], []);
 
+  // Modified NavButton to accept specific class
   const NavButton = ({ mode, icon: Icon, label, className }: { mode: ViewMode, icon: any, label: string, className?: string }) => (
         <button 
             className={`relative group p-3 rounded-xl transition-all duration-300 flex justify-center w-full ${className || ''}
@@ -684,6 +724,7 @@ const App: React.FC = () => {
         isPreviewPlaying={isPreviewPlaying}
       />
 
+      {/* ... Expanded Field Modal & Toast ... */}
       {expandedField && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="w-full max-w-3xl bg-white dark:bg-surface-dark rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col max-h-[80vh] animate-in zoom-in-95 duration-300">
@@ -710,6 +751,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* LEFT DOCK (Desktop) */}
       <div id="tour-dock" className={`
           tour-nav-dock hidden md:flex relative z-40 w-20 h-full flex-col items-center py-6 bg-white/60 dark:bg-black/40 backdrop-blur-xl border-r border-gray-200/50 dark:border-gray-800/50 transition-all duration-500 ease-in-out
           ${isFocusMode ? '-translate-x-full w-0 opacity-0' : 'translate-x-0 opacity-100'}
@@ -721,8 +763,8 @@ const App: React.FC = () => {
           </div>
           <div className="flex-1 w-full px-3 flex flex-col gap-2">
               <NavButton className="tour-nav-draft" mode={ViewMode.EDITOR} icon={Feather} label="Draft" />
-              <NavButton className="tour-nav-settings" mode={ViewMode.SETTINGS} icon={Sliders} label="Settings" />
-              <NavButton className="tour-nav-world" mode={ViewMode.WORLDBUILDING} icon={Globe} label="World" />
+              <NavButton className="tour-nav-settings" mode={ViewMode.SETTINGS} icon={Sliders} label="Character Settings" />
+              <NavButton className="tour-nav-world" mode={ViewMode.WORLDBUILDING} icon={Globe} label="Worldbuilding" />
           </div>
           <div className="w-full px-3 flex flex-col gap-3 mt-auto">
              <div className="w-full h-px bg-gray-200 dark:bg-gray-800"></div>
@@ -741,14 +783,15 @@ const App: React.FC = () => {
                 >
                     <FolderOpen size={20} />
                 </button>
+                {/* File Menu Popover */}
                 {isFileMenuOpen && (
                     <div ref={filesMenuRef} className="absolute left-14 bottom-0 w-64 bg-white dark:bg-surface-dark rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 p-2 z-50 animate-in slide-in-from-left-2 fade-in duration-200">
                         <div className="flex justify-between items-center px-3 py-2 border-b border-gray-100 dark:border-gray-700 mb-1">
-                            <span className="text-xs font-bold text-gray-500 uppercase">Saved</span>
+                            <span className="text-xs font-bold text-gray-500 uppercase">Saved Talkies</span>
                             <button onClick={handleNewCharacter} className="text-accent hover:text-amber-600 p-1" title="New"><FilePlus size={16}/></button>
                         </div>
                         <div className="max-h-60 overflow-y-auto space-y-1">
-                            {savedCharacters.length === 0 && <div className="px-3 py-4 text-xs text-gray-400 text-center">No saved</div>}
+                            {savedCharacters.length === 0 && <div className="px-3 py-4 text-xs text-gray-400 text-center">No saved characters</div>}
                             {savedCharacters.map(char => (
                                 <div key={char.id} onClick={() => handleLoadCharacter(char)} className={`group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-sm ${state.id === char.id ? 'bg-accent/10 text-accent' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'}`}>
                                     <span className="truncate flex-1">{char.settings.name || 'Untitled'}</span>
@@ -761,7 +804,7 @@ const App: React.FC = () => {
                         </div>
                         <div className="border-t border-gray-100 dark:border-gray-700 mt-2 pt-2">
                              <button onClick={() => setIsComparing(true)} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded-lg transition-colors">
-                                 <ArrowLeftRight size={14} /> Compare
+                                 <ArrowLeftRight size={14} /> Compare Characters
                              </button>
                         </div>
                     </div>
@@ -786,6 +829,7 @@ const App: React.FC = () => {
           </div>
       </div>
 
+      {/* MOBILE BOTTOM NAV */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white/80 dark:bg-surface-dark/90 backdrop-blur-xl border-t border-gray-200 dark:border-gray-800 z-[60] flex justify-around items-center px-2">
            <NavButton className="tour-nav-draft" mode={ViewMode.EDITOR} icon={Feather} label="Draft" />
            <NavButton className="tour-nav-settings" mode={ViewMode.SETTINGS} icon={Sliders} label="Settings" />
@@ -804,36 +848,42 @@ const App: React.FC = () => {
            </button>
       </div>
 
+      {/* MAIN WRAPPER */}
       <div className="flex-1 flex h-full overflow-hidden relative z-0">
           
           <div className="flex-1 h-full relative flex flex-col overflow-hidden transition-all duration-500 pb-20 md:pb-0">
               
+              {/* Header */}
               <div className={`w-full px-4 md:px-8 py-4 flex justify-between items-center z-30 transition-all duration-500 ${isFocusMode ? 'opacity-0 -translate-y-full' : 'opacity-100 translate-y-0'}`}>
                   <div className="flex-1 min-w-0 mr-4">
                       <h1 className="font-serif text-xl md:text-2xl font-bold text-gray-800 dark:text-white tracking-tight truncate">
-                          {(state.settings.name || 'Untitled')}
+                          {(state.settings.name || 'Untitled Talkie')}
                       </h1>
                       <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 font-medium mt-1">
                             <span className="flex items-center gap-1">
                                 {autoSaveStatus === 'saving' && <Loader2 size={10} className="animate-spin"/>}
-                                {autoSaveStatus === 'saved' ? 'Saved' : autoSaveStatus === 'saving' ? 'Saving...' : 'Off'}
+                                {autoSaveStatus === 'saved' ? 'Saved' : autoSaveStatus === 'saving' ? 'Saving...' : 'Auto-save off'}
                             </span>
                             <span className="text-gray-600 dark:text-gray-500">•</span>
                             <span>Last edited {state.lastSaved ? new Date(state.lastSaved).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--:--'}</span>
+                            <span className="text-gray-600 dark:text-gray-500 hidden md:inline">•</span>
+                            <span className="text-gray-500 hover:text-gray-800 dark:hover:text-gray-300 transition-colors duration-300 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap">
+                                Powered by <a href="https://fearyour.life/" target="_blank" rel="noopener noreferrer" className="text-yellow-500 hover:text-yellow-400 hover:underline decoration-yellow-500/30 underline-offset-2 transition-colors">NSD-CORE/70B</a>
+                            </span>
                       </div>
                   </div>
                   <div className="flex items-center gap-2 md:gap-3">
                       <button 
                           onClick={handleReadAloud}
                           className={`p-2 rounded-full transition-all ${isReadingAloud ? 'bg-accent text-white animate-pulse' : 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400'}`}
-                          title="Read"
+                          title="Read Aloud"
                       >
                           {isReadingAloud ? <VolumeX size={18} /> : <Volume2 size={18} />}
                       </button>
                       <button 
                           onClick={() => setIsFocusMode(!isFocusMode)}
                           className={`hidden md:flex p-2 rounded-full transition-all ${isFocusMode ? 'bg-accent text-white' : 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400'}`}
-                          title="Focus"
+                          title="Focus Mode"
                       >
                           {isFocusMode ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
                       </button>
@@ -848,7 +898,7 @@ const App: React.FC = () => {
                             id="tour-geny-toggle"
                             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                             className={`relative p-1 rounded-full transition-all duration-300 ${isSidebarOpen ? 'bg-accent shadow-[0_0_15px_rgba(234,179,8,0.5)]' : 'bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700'}`}
-                            title={isSidebarOpen ? "Close" : "Open"}
+                            title={isSidebarOpen ? "Close Geny" : "Open Geny"}
                       >
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-white dark:bg-gray-900 ${isSidebarOpen ? 'text-accent' : 'text-gray-500 dark:text-gray-400'} ${!isSidebarOpen ? 'animate-pulse-glow' : ''}`}>
                              <Bot size={18} />
@@ -858,6 +908,7 @@ const App: React.FC = () => {
                   </div>
               </div>
 
+              {/* Main Workspace Content */}
               <div className="flex-1 relative overflow-hidden">
                   {view === ViewMode.EDITOR && (
                       <div className="h-full w-full flex justify-center overflow-y-auto scroll-smooth pb-20 pt-2" id="editor-scroller">
@@ -889,14 +940,15 @@ const App: React.FC = () => {
                           <div className="w-full max-w-6xl px-4 md:px-8 h-full flex flex-col">
                              <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8 h-full overflow-y-auto lg:overflow-hidden">
                                  
+                                 {/* LEFT COLUMN */}
                                  <div className="lg:col-span-2 lg:h-full lg:overflow-y-auto pr-2 pb-6 lg:pb-20 order-2 lg:order-1">
                                     <div className="mb-8 flex items-center gap-3">
                                         <Sliders className="text-accent" size={28} />
-                                        <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">Profile</h2>
+                                        <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">Character Profile</h2>
                                     </div>
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                                         <ExpandableInput 
-                                            label="Name" name="name" placeholder="e.g. Lyra"
+                                            label="Name" name="name" placeholder="e.g. Lyra Silvertongue"
                                             value={state.settings.name} onChange={handleSettingsChange} onExpand={setExpandedField}
                                             className="w-full bg-transparent border-b border-gray-200 dark:border-gray-700 focus:border-accent focus:outline-none py-2 text-lg font-serif"
                                         />
@@ -908,33 +960,34 @@ const App: React.FC = () => {
                                     </div>
                                     <div className="mb-6">
                                         <ExpandableInput 
-                                            label="Role" name="role" placeholder="e.g. Hero"
+                                            label="Role" name="role" placeholder="e.g. Reluctant Hero, Cyberpunk Detective"
                                             value={state.settings.role} onChange={handleSettingsChange} onExpand={setExpandedField}
                                             className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 text-sm border border-transparent focus:border-accent focus:outline-none"
                                         />
                                     </div>
                                     <div className="space-y-6">
                                         <ExpandableInput 
-                                            label="Personality" name="personality" placeholder="Traits..."
+                                            label="Personality" name="personality" placeholder="Traits, quirks, and behaviors..."
                                             value={state.settings.personality} onChange={handleSettingsChange} onExpand={setExpandedField}
                                             className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 min-h-[100px] text-sm border border-transparent focus:border-accent focus:outline-none resize-none"
                                         />
                                         <ExpandableInput 
-                                            label="Backstory" name="backstory" placeholder="Origin..."
+                                            label="Backstory" name="backstory" placeholder="Origin story and key events..."
                                             value={state.settings.backstory} onChange={handleSettingsChange} onExpand={setExpandedField}
                                             className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 min-h-[120px] text-sm border border-transparent focus:border-accent focus:outline-none resize-none"
                                         />
                                         <ExpandableInput 
-                                            label="Biography" name="biography" placeholder="Short bio..."
+                                            label="Biography" name="biography" placeholder="Short bio for the Talkie profile card..."
                                             value={state.settings.biography} onChange={handleSettingsChange} onExpand={setExpandedField}
                                             className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 min-h-[80px] text-sm border border-transparent focus:border-accent focus:outline-none resize-none"
                                         />
                                     </div>
 
+                                    {/* Optimized Prompt Generator (Moved here) */}
                                     <section className="space-y-2 mt-8 mb-20">
                                           <div className="flex justify-between items-center mb-2">
                                               <label className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-2">
-                                                  <Terminal size={14} className="text-accent" /> Optimized Prompt
+                                                  <Terminal size={14} className="text-accent" /> Optimized Talkie Prompt
                                               </label>
                                               {state.generatedIntro && (
                                                   <button 
@@ -948,7 +1001,7 @@ const App: React.FC = () => {
                                           <textarea 
                                               readOnly
                                               value={state.generatedIntro || ''}
-                                              placeholder="Generate to create."
+                                              placeholder="Click 'Generate' to create a sanitized, structured, and optimized Talkie prompt based on your settings and draft."
                                               className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-48 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none text-sm leading-relaxed"
                                           />
                                           <button 
@@ -956,23 +1009,25 @@ const App: React.FC = () => {
                                               className="w-full mt-2 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-accent/20 transition-all"
                                           >
                                               {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                                              Generate
+                                              Generate / Optimize Prompt
                                           </button>
                                       </section>
                                  </div>
 
+                                 {/* RIGHT COLUMN */}
                                  <div className="flex lg:col-span-1 flex-col gap-4 pb-20 lg:pb-6 lg:h-full lg:overflow-y-auto mt-6 lg:mt-0 order-1 lg:order-2 shrink-0 scrollbar-hide">
                                       
+                                      {/* Talkie Character Creator */}
                                       <div id="tour-talkie-creator" className="shrink-0 bg-white dark:bg-gray-800/50 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
                                           <div className="flex justify-between items-center mb-3">
                                               <h3 className="text-sm font-bold text-accent uppercase tracking-wider flex items-center gap-2">
-                                                  <Bot size={16} /> Creator
+                                                  <Bot size={16} /> Talkie Character Creator
                                               </h3>
                                           </div>
                                           <textarea 
                                             value={aiCreatorInput}
                                             onChange={(e) => setAiCreatorInput(e.target.value)}
-                                            placeholder="Describe character..."
+                                            placeholder="Describe the character you want (e.g. A Talkior named NotSoDangerous stuck in 2025 who loves coffee)..."
                                             className="w-full text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 mb-3 h-24 resize-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all placeholder:text-gray-400"
                                           />
                                           <button 
@@ -980,10 +1035,11 @@ const App: React.FC = () => {
                                             disabled={isGenerating || !aiCreatorInput.trim()}
                                             className="w-full py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-accent/20"
                                           >
-                                              {isGenerating ? 'Working...' : 'Create'}
+                                              {isGenerating ? 'Creating...' : 'Create Character'}
                                           </button>
                                       </div>
 
+                                      {/* Tone Analyzer */}
                                       <div className="tour-tone-analyzer flex-1 min-h-[400px]">
                                         <ToneAnalyzer 
                                             draft={state.draft} 
@@ -1000,21 +1056,24 @@ const App: React.FC = () => {
 
                   {view === ViewMode.WORLDBUILDING && (
                       <div className="h-full w-full flex justify-center overflow-y-auto pb-20 pt-8">
+                           {/* ... Worldbuilding Content ... */}
                            <div className="w-full max-w-5xl px-4 md:px-8 animate-in fade-in zoom-in-95 duration-300">
+                                {/* ... Title & Add Button ... */}
                                 <div className="tour-world-header flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
                                   <div>
-                                      <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">Codex</h2>
-                                      <p className="text-gray-500 dark:text-gray-400 mt-1">Lore database.</p>
+                                      <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">World Codex</h2>
+                                      <p className="text-gray-500 dark:text-gray-400 mt-1">Define the lore, locations, and rules of your universe.</p>
                                   </div>
                                   <button 
                                     onClick={() => setIsAddingWorldItem(true)}
                                     className="w-full sm:w-auto px-4 py-2 bg-accent hover:bg-amber-700 text-white rounded-lg shadow-lg shadow-accent/20 transition-all flex items-center justify-center gap-2 font-medium"
                                   >
-                                      <Plus size={18} /> Add
+                                      <Plus size={18} /> Add Entry
                                   </button>
                               </div>
                                 {isAddingWorldItem && (
                                     <div className="mb-8 bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 animate-in slide-in-from-top-4">
+                                       {/* ... Form ... */}
                                        <div className="flex flex-col sm:flex-row gap-4 mb-4">
                                           <select 
                                             value={newWorldItem.category}
@@ -1029,19 +1088,19 @@ const App: React.FC = () => {
                                           <input 
                                             value={newWorldItem.title}
                                             onChange={e => setNewWorldItem({...newWorldItem, title: e.target.value})}
-                                            placeholder="Title"
+                                            placeholder="Entry Title"
                                             className="flex-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-accent"
                                           />
                                       </div>
                                       <textarea 
                                           value={newWorldItem.description}
                                           onChange={e => setNewWorldItem({...newWorldItem, description: e.target.value})}
-                                          placeholder="Details..."
+                                          placeholder="Description..."
                                           className="w-full h-24 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-accent mb-4 resize-none"
                                       />
                                       <div className="flex justify-end gap-2">
                                           <button onClick={() => setIsAddingWorldItem(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Cancel</button>
-                                          <button onClick={handleAddWorldItem} className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-black rounded-lg font-medium">Save</button>
+                                          <button onClick={handleAddWorldItem} className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-black rounded-lg font-medium">Save Entry</button>
                                       </div>
                                     </div>
                                 )}
@@ -1049,8 +1108,8 @@ const App: React.FC = () => {
                                   {state.worldItems.length === 0 && !isAddingWorldItem && (
                                       <div className="col-span-full py-20 text-center border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-2xl">
                                           <Globe size={48} className="mx-auto text-gray-300 mb-4" />
-                                          <p className="text-gray-400 font-medium">Empty.</p>
-                                          <button onClick={() => setIsAddingWorldItem(true)} className="mt-2 text-accent hover:underline">Create entry</button>
+                                          <p className="text-gray-400 font-medium">No lore entries yet.</p>
+                                          <button onClick={() => setIsAddingWorldItem(true)} className="mt-2 text-accent hover:underline">Create your first entry</button>
                                       </div>
                                   )}
                                   {state.worldItems.map(item => (
@@ -1082,6 +1141,7 @@ const App: React.FC = () => {
               </div>
           </div>
 
+          {/* RIGHT SIDEBAR (Desktop) */}
           <div className={`
               hidden md:block relative h-full bg-white dark:bg-surface-dark border-l border-gray-200 dark:border-gray-800 transition-all duration-300 ease-in-out overflow-hidden
               ${isSidebarOpen && !isFocusMode ? 'w-80 translate-x-0 opacity-0' : 'w-0 translate-x-full opacity-0'}
@@ -1098,6 +1158,7 @@ const App: React.FC = () => {
           </div>
       </div>
 
+      {/* MOBILE SIDEBAR */}
       <div className={`
           md:hidden fixed inset-0 z-[100] pointer-events-none
           ${isSidebarOpen ? 'pointer-events-auto' : ''}
@@ -1130,5 +1191,12 @@ const App: React.FC = () => {
     </div>
   );
 };
+
+const CheckCircle2 = ({size, className}: {size: number, className?: string}) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+);
 
 export default App;

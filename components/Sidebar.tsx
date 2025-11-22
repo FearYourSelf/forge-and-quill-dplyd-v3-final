@@ -1,6 +1,7 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Image as ImageIcon, Loader2, Bot, AlertCircle, Mic } from 'lucide-react';
-import { processStream } from '../services/geminiService';
+import { chatWithGeminiStream } from '../services/geminiService';
 import { ChatMessage, ToolCallHandler } from '../types';
 
 interface SidebarProps {
@@ -11,12 +12,12 @@ interface SidebarProps {
   onStartLive: () => void;
 }
 
-const FALLBACK_MSGS = [
-    "Applied. How does it look?",
-    "Done. What's next?",
-    "Updated. Want to refine further?",
-    "Got it. Check the draft.",
-    "All set."
+const FALLBACK_MESSAGES = [
+    "I've applied those changes for you! How does it look?",
+    "Done! I've updated the Talkie details. What's next?",
+    "Changes applied! Do you want to refine the backstory further?",
+    "Got it. I've updated the draft. Does that capture the vibe you wanted?",
+    "All set! I've tweaked the settings. Should we work on the intro scene now?"
 ];
 
 const FormattedText: React.FC<{ text: string }> = ({ text }) => {
@@ -116,6 +117,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
     setSelectedImage(null);
     setIsLoading(true);
 
+    // Placeholder for AI message
     const aiMsgId = (Date.now() + 1).toString();
     setMessages(prev => [...prev, { id: aiMsgId, role: 'model', text: '', isThinking: true }]);
 
@@ -125,12 +127,13 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
         parts: [{ text: m.text }]
       }));
 
-      const stream = processStream(history, userMsg.text, userMsg.image?.split(',')[1], draftContext);
+      const stream = chatWithGeminiStream(history, userMsg.text, userMsg.image?.split(',')[1], draftContext);
 
       let accumulatedText = "";
       let toolExecuted = false;
 
       for await (const chunk of stream) {
+          // Handle text streaming
           if (chunk.text) {
             accumulatedText += chunk.text;
             setMessages(prev => prev.map(m => 
@@ -138,6 +141,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
             ));
           }
 
+          // Handle Tool Calls
           if (chunk.functionCalls) {
               toolExecuted = true;
               for (const call of chunk.functionCalls) {
@@ -148,26 +152,34 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
           }
       }
       
+      // Fallback if tool executed but no text
       if (toolExecuted && !accumulatedText.trim()) {
-          const randomMsg = FALLBACK_MSGS[Math.floor(Math.random() * FALLBACK_MSGS.length)];
+          const randomMsg = FALLBACK_MESSAGES[Math.floor(Math.random() * FALLBACK_MESSAGES.length)];
           setMessages(prev => prev.map(m => 
             m.id === aiMsgId ? { ...m, text: randomMsg, isThinking: false } : m
           ));
       }
 
     } catch (error: any) {
+      console.error("Gemini Error:", error);
+      // Use the friendly message from our service, or fallback
       const msg = error?.message || "Unknown error";
-      const errorText = debugMode ? `Error: ${msg}` : "Connection issue.";
+      
+      const errorText = debugMode 
+          ? `Error: ${msg}` 
+          : "Sorry, I ran into a creative block. Please try again.";
           
       setMessages(prev => prev.map(m => 
         m.id === aiMsgId ? { ...m, text: errorText, isThinking: false } : m
       ));
     } finally {
         setIsLoading(false);
+        // Clean up any dangling empty messages that weren't caught by fallback
         setMessages(prev => prev.filter(m => m.isThinking || m.text.trim() !== ''));
     }
   };
 
+  // We no longer return null if !isOpen, so parent can animate width/transform.
   return (
     <div className="flex flex-col h-full bg-white dark:bg-surface-dark shadow-none z-40 transition-colors duration-700 relative w-full">
       <div className="p-4 border-b border-gray-100 dark:border-gray-800 bg-paper dark:bg-surface-dark flex items-center justify-between transition-colors duration-700">
@@ -196,7 +208,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
               {msg.isThinking && !msg.text ? (
                   <div className="flex items-center gap-2">
                     <Loader2 className="animate-spin" size={14} />
-                    <span className="text-xs opacity-70">Thinking...</span>
+                    <span className="text-xs opacity-70">Geny is thinking...</span>
                   </div>
               ) : (
                  <>
@@ -252,7 +264,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
                 sendMessage();
               }
             }}
-            placeholder="Message..."
+            placeholder="Ask Geny..."
             className="flex-1 resize-none border-0 bg-gray-50 dark:bg-gray-800 dark:text-white rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-accent/20 focus:outline-none max-h-32 transition-shadow transition-colors duration-300"
             rows={1}
           />
@@ -265,7 +277,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, draftContext, onToolCall, deb
           </button>
         </div>
         <div className="text-[10px] text-gray-300 dark:text-gray-600 text-center mt-2 pb-1 select-none">
-             Created by <a href="#" className="hover:text-accent transition-colors whitespace-nowrap font-medium text-yellow-500 dark:text-yellow-400">NotSoDangerous</a>
+             For the Talkie community with love by <a href="https://www.talkie-ai.com/profile/notsodangerous-327065556930864" target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors whitespace-nowrap font-medium text-yellow-500 dark:text-yellow-400">NotSoDangerous<span className="text-red-500 ml-0.5">❤️</span></a>
         </div>
       </div>
     </div>
