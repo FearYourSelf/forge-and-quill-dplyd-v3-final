@@ -1,11 +1,10 @@
-
 import React, { useEffect, useRef, useState } from 'react';
-import { GoogleGenAI, Modality, LiveServerMessage, FunctionDeclaration, Type } from '@google/genai';
-import { Mic, X, AlertCircle, RefreshCw } from 'lucide-react';
+import { GoogleGenAI as Engine, Modality as M, LiveServerMessage as LSM, FunctionDeclaration as FD, Type as T } from '@google/genai';
+import { X, AlertCircle, RefreshCw } from 'lucide-react';
 import { createPcmBlob, decode, pcmToAudioBuffer } from '../services/audioUtils';
 import { ToolCallHandler, AppState } from '../types';
 
-const MODEL_LIVE = 'gemini-2.5-flash-native-audio-preview-09-2025';
+const M_LIVE = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
 interface LiveSessionProps {
   onClose: () => void;
@@ -14,382 +13,287 @@ interface LiveSessionProps {
   voiceName: string;
 }
 
-const createFullCharacterTool: FunctionDeclaration = {
+const D_1: FD = {
   name: 'createFullCharacter',
-  description: 'Creates or Overhauls a complete character profile, including settings, story draft intro, and world lore in one go.',
+  description: 'Generates profile.',
   parameters: {
-    type: Type.OBJECT,
+    type: T.OBJECT,
     properties: {
-      name: { type: Type.STRING },
-      role: { type: Type.STRING },
-      age: { type: Type.STRING },
-      personality: { type: Type.STRING },
-      backstory: { type: Type.STRING },
-      biography: { type: Type.STRING },
-      draft_intro: { type: Type.STRING, description: 'A compelling 300+ word introductory scene/story starter for the Draft tab.' },
+      name: { type: T.STRING },
+      role: { type: T.STRING },
+      age: { type: T.STRING },
+      personality: { type: T.STRING },
+      backstory: { type: T.STRING },
+      biography: { type: T.STRING },
+      draft_intro: { type: T.STRING },
       world_lore: {
-        type: Type.ARRAY,
+        type: T.ARRAY,
         items: {
-          type: Type.OBJECT,
+          type: T.OBJECT,
           properties: {
-            category: { type: Type.STRING, enum: ['Lore', 'Location', 'Relationship', 'Magic'] },
-            title: { type: Type.STRING },
-            description: { type: Type.STRING }
+            category: { type: T.STRING, enum: ['Lore', 'Location', 'Relationship', 'Magic'] },
+            title: { type: T.STRING },
+            description: { type: T.STRING }
           }
-        },
-        description: 'Array of 3-5 world building items related to the character.'
+        }
       }
     },
     required: ['name', 'role', 'personality', 'draft_intro', 'world_lore']
   }
 };
 
-const updateDraftTool: FunctionDeclaration = {
+const D_2: FD = {
     name: 'updateDraft',
-    description: 'Updates the user\'s story draft with new text.',
+    description: 'Updates text.',
     parameters: { 
-        type: Type.OBJECT, 
+        type: T.OBJECT, 
         properties: { 
-            text: { type: Type.STRING, description: "The text to add to the story." },
-            action: { type: Type.STRING, enum: ['append', 'replace'], description: "How to update." }
+            text: { type: T.STRING },
+            action: { type: T.STRING, enum: ['append', 'replace'] }
         },
         required: ['text']
     }
 };
 
-const updateCharacterProfileTool: FunctionDeclaration = {
+const D_3: FD = {
     name: 'updateCharacterProfile',
-    description: 'Updates the character settings fields (name, age, role, etc).',
+    description: 'Updates fields.',
     parameters: {
-        type: Type.OBJECT,
+        type: T.OBJECT,
         properties: {
-        field: { type: Type.STRING, enum: ['name', 'role', 'age', 'personality', 'backstory', 'biography'] },
-        value: { type: Type.STRING }
+        field: { type: T.STRING, enum: ['name', 'role', 'age', 'personality', 'backstory', 'biography'] },
+        value: { type: T.STRING }
         },
         required: ['field', 'value']
     }
 };
 
-const addWorldEntryTool: FunctionDeclaration = {
+const D_4: FD = {
   name: 'addWorldEntry',
-  description: 'Adds a lore entry, location, relationship, or magic rule to the World Codex.',
+  description: 'Adds entry.',
   parameters: {
-    type: Type.OBJECT,
+    type: T.OBJECT,
     properties: {
-      category: { type: Type.STRING, enum: ['Lore', 'Location', 'Relationship', 'Magic'], description: 'The category of the entry.' },
-      title: { type: Type.STRING, description: 'The title of the entry (e.g. "The Crystal Spire").' },
-      description: { type: Type.STRING, description: 'The description/details of the entry.' }
+      category: { type: T.STRING, enum: ['Lore', 'Location', 'Relationship', 'Magic'] },
+      title: { type: T.STRING },
+      description: { type: T.STRING }
     },
     required: ['category', 'title', 'description']
   }
 };
 
-// Dynamic Capsule Waveform Visualizer
-const CapsuleVisualizer: React.FC<{ audioCtx: AudioContext | null, sourceNode: AudioNode | null, isActive: boolean, color: string }> = ({ audioCtx, sourceNode, isActive, color }) => {
+const Visualizer: React.FC<{ audioCtx: AudioContext | null, sourceNode: AudioNode | null, isActive: boolean, color: string }> = ({ audioCtx, sourceNode, isActive, color }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const analyserRef = useRef<AnalyserNode | null>(null);
-    const reqRef = useRef<number>(0);
+    const raf = useRef<number>(0);
 
     useEffect(() => {
         if (!isActive || !audioCtx || !sourceNode || !canvasRef.current) return;
 
-        // Setup Analyser
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 64; 
-        analyser.smoothingTimeConstant = 0.6;
-        sourceNode.connect(analyser);
-        analyserRef.current = analyser;
+        const an = audioCtx.createAnalyser();
+        an.fftSize = 64; 
+        an.smoothingTimeConstant = 0.6;
+        sourceNode.connect(an);
 
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
+        const data = new Uint8Array(an.frequencyBinCount);
+        const cvs = canvasRef.current;
+        const ctx = cvs.getContext('2d');
         if (!ctx) return;
 
         const draw = () => {
-            reqRef.current = requestAnimationFrame(draw);
-            analyser.getByteFrequencyData(dataArray);
-
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw Waveform
-            const barWidth = (canvas.width / dataArray.length) * 2.5;
+            raf.current = requestAnimationFrame(draw);
+            an.getByteFrequencyData(data);
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+            const w = (cvs.width / data.length) * 2.5;
             let x = 0;
-            const centerY = canvas.height / 2;
-
+            const cy = cvs.height / 2;
             ctx.beginPath();
-            ctx.moveTo(0, centerY);
-
-            // Smooth curve through points
-            for (let i = 0; i < dataArray.length; i++) {
-                const v = dataArray[i] / 128.0; 
-                const y = v * (canvas.height / 3); // Amplitude scaling
-
-                // Reflection for symmetry
-                const yTop = centerY - y/2;
-                const yBottom = centerY + y/2;
-                
+            for (let i = 0; i < data.length; i++) {
+                const v = data[i] / 128.0; 
+                const y = v * (cvs.height / 3);
                 ctx.fillStyle = color;
-                // Draw rounded bars instead of a line for the "capsule" look
-                if (dataArray[i] > 5) {
-                     ctx.fillRect(x, centerY - (y/2), barWidth - 2, y);
-                } else {
-                     // Idle dot
-                     ctx.fillRect(x, centerY - 1, barWidth - 2, 2);
-                }
-                
-                x += barWidth + 1;
+                if (data[i] > 5) ctx.fillRect(x, cy - (y/2), w - 2, y);
+                else ctx.fillRect(x, cy - 1, w - 2, 2);
+                x += w + 1;
             }
         };
         draw();
-
         return () => {
-            cancelAnimationFrame(reqRef.current);
-            try { sourceNode.disconnect(analyser); } catch(e){}
+            cancelAnimationFrame(raf.current);
+            try { sourceNode.disconnect(an); } catch{}
         };
     }, [audioCtx, sourceNode, isActive, color]);
 
     return <canvas ref={canvasRef} width={160} height={40} className="w-full h-full opacity-80" />;
 };
 
-
 const LiveSession: React.FC<LiveSessionProps> = ({ onClose, onToolCall, currentContext, voiceName }) => {
   const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const inputContextRef = useRef<AudioContext | null>(null);
-  const [inputSource, setInputSource] = useState<AudioNode | null>(null);
-  const [outputSource, setOutputSource] = useState<AudioNode | null>(null);
+  const ctxOut = useRef<AudioContext | null>(null);
+  const ctxIn = useRef<AudioContext | null>(null);
+  const [srcIn, setSrcIn] = useState<AudioNode | null>(null);
+  const [srcOut, setSrcOut] = useState<AudioNode | null>(null);
 
-  const nextStartTimeRef = useRef<number>(0);
-  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const outputGainRef = useRef<GainNode | null>(null);
+  const nextT = useRef<number>(0);
+  const srcs = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const gain = useRef<GainNode | null>(null);
   
-  // Guard to prevent sending data when not connected
-  const isConnectedRef = useRef(false);
+  const active = useRef(false);
 
   useEffect(() => {
-      // Auto-connect when component mounts (as it's now triggered by the sidebar button)
-      startSession();
-      
-      return () => {
-        cleanup();
-      };
-  }, []);
-
-  const cleanup = () => {
-    isConnectedRef.current = false;
-    sourcesRef.current.forEach(source => source.stop());
-    sourcesRef.current.clear();
-    
-    if (inputContextRef.current) {
-      inputContextRef.current.close();
-      inputContextRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    // Notify parent if needed, or just unmount
-  };
-
-  const startSession = async () => {
-    setStatus('connecting');
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
-      const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      audioContextRef.current = outputAudioContext;
-      const outputNode = outputAudioContext.createGain();
-      outputNode.connect(outputAudioContext.destination);
-      outputGainRef.current = outputNode;
-      setOutputSource(outputNode); 
-
-      const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      inputContextRef.current = inputAudioContext;
-
-      // Ensure context is running (handling user gesture requirement)
-      if (inputAudioContext.state === 'suspended') {
-        await inputAudioContext.resume();
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const micSource = inputAudioContext.createMediaStreamSource(stream);
-      setInputSource(micSource); 
-
-      const contextStr = `
-      CURRENT DRAFT:
-      ${currentContext.draft.substring(0, 2000)}...
-      
-      TALKIE SETTINGS:
-      Name: ${currentContext.settings.name}
-      Role: ${currentContext.settings.role}
-      Personality: ${currentContext.settings.personality}
-      Biography: ${currentContext.settings.biography}
-      `;
-
-      const sessionPromise = ai.live.connect({
-        model: MODEL_LIVE,
-        config: {
-          responseModalities: [Modality.AUDIO],
-          tools: [{ functionDeclarations: [createFullCharacterTool, updateDraftTool, updateCharacterProfileTool, addWorldEntryTool] }],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } },
-          },
-          systemInstruction: `You are Geny, a creative writing coach and dynamic brainstorming partner for Talkie creators.
-          CONTEXT: ${contextStr}
+      const init = async () => {
+        setStatus('connecting');
+        try {
+          const eng = new Engine({ apiKey: process.env.API_KEY });
           
-          RULES:
-          1. BE CHILL: Introduce yourself briefly as Geny. Don't be pushy.
-             Example: "Hey, it's Geny. What's on your mind for this character?"
-          2. BE LAID BACK: Don't ask "What's next?" constantly. Let the user lead.
-          3. If the user asks to create a NEW character or do a full overhaul, you MUST use the 'createFullCharacter' tool.
-          4. If the user asks to update just the draft, use updateDraft.
-          5. If the user asks to update character details, use updateCharacterProfile.
-          `,
-        },
-        callbacks: {
-          onopen: async () => {
-            isConnectedRef.current = true;
-            setStatus('connected');
-            const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
-            scriptProcessor.onaudioprocess = (e) => {
-              if (!isConnectedRef.current) return; // Guard
-              const inputData = e.inputBuffer.getChannelData(0);
-              const pcmBlob = createPcmBlob(inputData);
-              sessionPromise.then((session) => {
-                session.sendRealtimeInput({ media: pcmBlob });
-              }).catch(err => {
-                  console.error("Send input error:", err);
-              });
-            };
-            
-            micSource.connect(scriptProcessor);
-            scriptProcessor.connect(inputAudioContext.destination);
-          },
-          onmessage: async (message: LiveServerMessage) => {
-            if (message.toolCall?.functionCalls) {
-                for (const fc of message.toolCall.functionCalls) {
-                    const name = fc.name || 'unknown_tool';
-                    onToolCall(name === 'updateDraft' ? 'updateStory' : name, fc.args);
-                    sessionPromise.then(session => {
-                        session.sendToolResponse({
-                            functionResponses: { id: fc.id, name: name, response: { result: 'ok' } }
-                        });
-                    });
+          const out = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+          ctxOut.current = out;
+          const gn = out.createGain();
+          gn.connect(out.destination);
+          gain.current = gn;
+          setSrcOut(gn); 
+
+          const inp = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+          ctxIn.current = inp;
+
+          if (inp.state === 'suspended') await inp.resume();
+
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const ms = inp.createMediaStreamSource(stream);
+          setSrcIn(ms); 
+
+          const ctxStr = `Draft: ${currentContext.draft.substring(0, 2000)}...\nSettings: ${JSON.stringify(currentContext.settings)}`;
+
+          const p = eng.live.connect({
+            model: M_LIVE,
+            callbacks: {
+                onopen: () => {
+                    setStatus('connected');
+                    active.current = true;
+
+                    const sp = inp.createScriptProcessor(4096, 1, 1);
+                    sp.onaudioprocess = (e) => {
+                        if (!active.current) return;
+                        const d = e.inputBuffer.getChannelData(0);
+                        const b = createPcmBlob(d);
+                        p.then(s => s.sendRealtimeInput({ media: b }));
+                    };
+                    ms.connect(sp);
+                    sp.connect(inp.destination);
+                },
+                onmessage: async (m: LSM) => {
+                    if (m.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) {
+                        const d = m.serverContent.modelTurn.parts[0].inlineData.data;
+                        if (ctxOut.current && gain.current) {
+                            const buf = await pcmToAudioBuffer(decode(d), ctxOut.current, 24000, 1);
+                            const s = ctxOut.current.createBufferSource();
+                            s.buffer = buf;
+                            s.connect(gain.current);
+                            const n = ctxOut.current.currentTime;
+                            const t = Math.max(n, nextT.current);
+                            s.start(t);
+                            nextT.current = t + buf.duration;
+                            s.onended = () => srcs.current.delete(s);
+                            srcs.current.add(s);
+                        }
+                    }
+                    
+                    if (m.toolCall) {
+                        for (const fc of m.toolCall.functionCalls) {
+                            onToolCall(fc.name, fc.args);
+                            p.then(s => s.sendToolResponse({
+                                functionResponses: [{
+                                    id: fc.id,
+                                    name: fc.name,
+                                    response: { result: "OK" }
+                                }]
+                            }));
+                        }
+                    }
+
+                    if (m.serverContent?.interrupted) {
+                        srcs.current.forEach(s => { try { s.stop(); } catch{} });
+                        srcs.current.clear();
+                        nextT.current = 0;
+                    }
+                },
+                onclose: () => {
+                    setStatus('idle');
+                    active.current = false;
+                },
+                onerror: (err) => {
+                    console.error(err);
+                    setStatus('error');
+                    active.current = false;
+                }
+            },
+            config: {
+                systemInstruction: `Act as 'Geny' or defined character.\nCONTEXT:\n${ctxStr}`,
+                tools: [{ functionDeclarations: [D_1, D_2, D_3, D_4] }],
+                responseModalities: [M.AUDIO],
+                speechConfig: {
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName || 'Aoede' } }
                 }
             }
-
-            const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (base64Audio) {
-                const ctx = audioContextRef.current;
-                const outNode = outputGainRef.current;
-                if(!ctx || !outNode) return;
-
-                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-                
-                const audioBuffer = await pcmToAudioBuffer(
-                    decode(base64Audio),
-                    ctx,
-                    24000,
-                    1
-                );
-                
-                const source = ctx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(outNode);
-                source.addEventListener('ended', () => {
-                    sourcesRef.current.delete(source);
-                });
-                
-                source.start(nextStartTimeRef.current);
-                nextStartTimeRef.current += audioBuffer.duration;
-                sourcesRef.current.add(source);
-            }
-            
-            if (message.serverContent?.interrupted) {
-                 sourcesRef.current.forEach(s => {
-                     try { s.stop(); } catch(e){}
-                 });
-                 sourcesRef.current.clear();
-                 nextStartTimeRef.current = 0;
-            }
-          },
-          onclose: () => {
-            isConnectedRef.current = false;
-            // Only set to idle if we aren't already unmounted by parent
-            setStatus('idle');
-          },
-          onerror: (err) => {
-            console.error('Session Error', err);
-            isConnectedRef.current = false;
-            setStatus('error');
-          }
+          });
+        } catch (error) {
+          console.error(error);
+          setStatus('error');
         }
-      });
+      };
 
-    } catch (e) {
-      console.error("Failed to start live session", e);
-      setStatus('error');
-    }
-  };
+      init();
 
-  // Loading State
-  if (status === 'connecting') {
-      return (
-        <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-50 animate-in zoom-in fade-in duration-300 pointer-events-none">
-             <div className="bg-white dark:bg-surface-dark px-6 py-3 rounded-full shadow-xl border border-gray-100 dark:border-gray-700 flex items-center gap-3">
-                <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
-                <span className="text-sm font-medium text-gray-600 dark:text-gray-300">Connecting to Geny...</span>
-             </div>
-        </div>
-      );
-  }
+      return () => {
+        active.current = false;
+        srcs.current.forEach(s => { try { s.stop(); } catch{} });
+        srcs.current.clear();
+        if (ctxIn.current) { ctxIn.current.close(); ctxIn.current = null; }
+        if (ctxOut.current) { ctxOut.current.close(); ctxOut.current = null; }
+      };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Active Capsule Interface
   return (
-    <div className="fixed bottom-24 md:bottom-8 left-1/2 transform -translate-x-1/2 z-[150] flex flex-col items-center gap-2 w-full max-w-md px-4 animate-in zoom-in fade-in slide-in-from-bottom-8 duration-500 ease-out">
-        
-        {/* The Dynamic Capsule */}
-        <div className="w-full bg-white/90 dark:bg-surface-dark/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/20 dark:border-white/10 flex items-center p-2 gap-4 h-20 relative overflow-hidden ring-1 ring-black/5 dark:ring-white/5">
-            
-            {/* Close Button */}
-            <button 
-                onClick={onClose}
-                className="p-3 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-red-500 transition-colors shrink-0 z-10"
-            >
-                <X size={20} />
-            </button>
-
-            {/* Status Indicator & Visualizer */}
-            <div className="flex-1 flex flex-col justify-center h-full relative">
-                 {/* Labels */}
-                 <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-1 px-1">
-                    <span>{voiceName === 'Aoede' ? 'Geny' : voiceName}</span>
-                    <span>You</span>
-                 </div>
-
-                 {/* Waveforms Container */}
-                 <div className="flex-1 flex items-center gap-2 relative">
-                      <div className="flex-1 h-8 rounded bg-gray-50/50 dark:bg-gray-900/50 overflow-hidden border border-gray-100 dark:border-gray-800 relative">
-                         <CapsuleVisualizer audioCtx={audioContextRef.current} sourceNode={outputSource} isActive={true} color="#d97706" />
-                      </div>
-                      <div className="flex-1 h-8 rounded bg-gray-50/50 dark:bg-gray-900/50 overflow-hidden border border-gray-100 dark:border-gray-800 relative">
-                         <CapsuleVisualizer audioCtx={inputContextRef.current} sourceNode={inputSource} isActive={true} color="#10b981" />
-                      </div>
-                 </div>
+    <div className="fixed bottom-4 right-4 z-50 w-80 bg-gray-900 text-white rounded-2xl shadow-2xl border border-gray-700 overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300 flex flex-col">
+        <div className="p-4 bg-gradient-to-r from-gray-800 to-gray-900 flex justify-between items-center border-b border-gray-800">
+            <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' : status === 'error' ? 'bg-red-500' : 'bg-yellow-500'}`}></span>
+                <span className="font-bold font-serif text-sm">Live Uplink</span>
             </div>
+            <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+                <X size={18} />
+            </button>
         </div>
         
-        {status === 'error' && (
-            <button 
-                onClick={startSession}
-                className="bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 animate-in fade-in shadow-sm hover:bg-red-200 dark:hover:bg-red-900/70 transition-colors pointer-events-auto"
-            >
-                <AlertCircle size={12} />
-                Service Unavailable. Tap to Retry.
-                <RefreshCw size={10} className="ml-1" />
-            </button>
-        )}
+        <div className="h-24 bg-black/50 relative flex items-center justify-center">
+             {status === 'connecting' && (
+                 <div className="flex items-center gap-2 text-xs text-gray-400">
+                     <RefreshCw className="animate-spin" size={14} /> Init...
+                 </div>
+             )}
+             
+             {status === 'error' && (
+                 <div className="flex items-center gap-2 text-xs text-red-400">
+                     <AlertCircle size={14} /> Failed
+                 </div>
+             )}
+
+             {status === 'connected' && (
+                <div className="w-full h-full flex flex-col">
+                    <div className="flex-1 relative">
+                         <Visualizer audioCtx={ctxOut.current} sourceNode={srcOut} isActive={true} color="#fbbf24" />
+                    </div>
+                    <div className="h-px bg-gray-800 w-full"></div>
+                     <div className="flex-1 relative">
+                         <Visualizer audioCtx={ctxIn.current} sourceNode={srcIn} isActive={true} color="#4ade80" />
+                    </div>
+                </div>
+             )}
+        </div>
+
+        <div className="p-3 text-xs text-center text-gray-500 bg-gray-900">
+             Voice active.
+        </div>
     </div>
   );
 };

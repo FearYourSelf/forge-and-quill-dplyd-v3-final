@@ -1,23 +1,22 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { 
   BookOpen, Bot, Feather, Mic, Settings as SettingsIcon, Sliders, 
   Volume2, Plus, Trash2, Check, Download, Moon, Sun, 
   X, Play, Square, FolderOpen, FilePlus, Save, 
   AlertTriangle, Loader2, Info, Bug, Layout, Maximize2, Minimize2,
   PanelRightClose, PanelRightOpen, Globe, Sparkles, Terminal, VolumeX, ArrowLeftRight,
-  Flame, PenTool, Copy, Wand2
+  Flame, PenTool, Copy, Wand2, CheckCircle2
 } from 'lucide-react';
 import Editor from './components/Editor';
 import Sidebar from './components/Sidebar';
 import ToneAnalyzer from './components/ToneAnalyzer';
 import LiveSession from './components/LiveSession';
-import OnboardingOverlay from './components/OnboardingOverlay';
+import WalkthroughOverlay, { TourStep } from './components/WalkthroughOverlay';
 import CharacterCompare from './components/CharacterCompare';
 import AppSettingsModal from './components/AppSettingsModal';
-import { ViewMode, AppState, WorldItem, AnalysisResult, CharacterSettings } from './types';
-import { generateCharacterProfile, generateSpeech, analyzeDraft, generateOptimizedTalkiePrompt } from './services/geminiService';
+import { ViewMode, AppState, WorldItem, AnalysisResult, CharacterSettings, Highlight } from './types';
+import { construct, synthesis, inspect, optimize } from './services/geminiService';
 
-// --- Extracted Component to Prevent Re-renders and Focus Loss ---
 const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, className }: any) => {
     const [copied, setCopied] = useState(false);
 
@@ -35,7 +34,7 @@ const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, 
                   <button
                       onClick={handleCopy}
                       className="text-gray-400 hover:text-accent p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
-                      title="Copy to Clipboard"
+                      title="Copy"
                   >
                      {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
                   </button>
@@ -60,26 +59,51 @@ const ExpandableInput = ({ label, name, value, onChange, onExpand, placeholder, 
 };
 
 const App: React.FC = () => {
-  // Generate a simple ID
   const generateId = () => Math.random().toString(36).substring(2, 9);
 
-  const [state, setState] = useState<AppState>({
-    id: generateId(),
-    draft: '',
-    settings: {
-      name: '',
-      role: '',
-      personality: '',
-      backstory: '',
-      biography: '',
-      age: ''
-    },
-    worldItems: [],
-    generatedIntro: null,
-    lastSaved: undefined
-  });
+  const loadInitialState = (): AppState => {
+      let latestChar: AppState | null = null;
+      let latestTime = 0;
 
-  // App Settings
+      for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key?.startsWith('fq_char_')) {
+              try {
+                  const char = JSON.parse(localStorage.getItem(key) || '');
+                  const time = char.lastSaved ? new Date(char.lastSaved).getTime() : 0;
+                  if (time > latestTime) {
+                      latestTime = time;
+                      latestChar = char;
+                  }
+              } catch (e) {
+                  // ignore
+              }
+          }
+      }
+
+      if (latestChar) {
+          return latestChar;
+      }
+
+      return {
+        id: generateId(),
+        draft: '',
+        settings: {
+          name: '',
+          role: '',
+          personality: '',
+          backstory: '',
+          biography: '',
+          age: ''
+        },
+        worldItems: [],
+        generatedIntro: null,
+        lastSaved: undefined
+      };
+  };
+
+  const [state, setState] = useState<AppState>(loadInitialState);
+
   const [appSettings, setAppSettings] = useState({
       debugMode: false,
       autoSave: true,
@@ -88,72 +112,78 @@ const App: React.FC = () => {
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // Shared Analysis State
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  // History for Undo/Redo
   const [history, setHistory] = useState<AppState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const [view, setView] = useState<ViewMode>(ViewMode.EDITOR);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Default closed
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReadingAloud, setIsReadingAloud] = useState(false);
-  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false); // For Voice Preview
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false); 
   const [toast, setToast] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFocusMode, setIsFocusMode] = useState(false);
   
-  // File Management State
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
   const filesMenuRef = useRef<HTMLDivElement>(null);
   const [savedCharacters, setSavedCharacters] = useState<AppState[]>([]);
   const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'disabled'>('saved');
   
-  // Comparison State
   const [isComparing, setIsComparing] = useState(false);
 
-  // AI Confirm Modal
   const [showGenConfirm, setShowGenConfirm] = useState(false);
 
-  // AI Creator Input State
   const [aiCreatorInput, setAiCreatorInput] = useState('');
 
-  // Live Session State
   const [showLiveSession, setShowLiveSession] = useState(false);
 
-  // Expanded Field Modal
   const [expandedField, setExpandedField] = useState<{name: string, value: string} | null>(null);
 
-  // Onboarding
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showWalkthrough, setShowWalkthrough] = useState(false);
+  const [isInspectMode, setIsInspectMode] = useState(false);
+  const [demoSelection, setDemoSelection] = useState<{ start: number; end: number; text: string } | null>(null);
+  const [isIntroAnimating, setIsIntroAnimating] = useState(false);
 
-  // Audio Source Ref for Stopping TTS
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const previewSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
-  // Worldbuilding state
   const [isAddingWorldItem, setIsAddingWorldItem] = useState(false);
   const [newWorldItem, setNewWorldItem] = useState<Partial<WorldItem>>({ category: 'Lore', title: '', description: '' });
 
-  // Prompt Copy State
   const [isPromptCopied, setIsPromptCopied] = useState(false);
 
-  // Initial Check for Onboarding
   useEffect(() => {
       const hasSeen = localStorage.getItem('fq_has_seen_tutorial');
       if (!hasSeen) {
-          setShowOnboarding(true);
+          setShowWalkthrough(true);
       }
+      setHistory([state]);
+      setHistoryIndex(0);
   }, []);
 
-  const handleCloseOnboarding = () => {
-      setShowOnboarding(false);
+  const handleCloseWalkthrough = () => {
+      setShowWalkthrough(false);
       localStorage.setItem('fq_has_seen_tutorial', 'true');
+      setIsSidebarOpen(false); 
+      
+      setDemoSelection(null);
+      setIsInspectMode(false);
+      
+      setState(prev => ({ ...prev, draft: '' }));
+      handleIntroAnimation();
   };
 
-  // Click Outside for Files Menu
+  const handleIntroAnimation = () => {
+      setView(ViewMode.EDITOR);
+      setIsIntroAnimating(true);
+      setTimeout(() => {
+          setIsIntroAnimating(false);
+      }, 4000);
+  };
+
   useEffect(() => {
       const handleClickOutside = (event: MouseEvent) => {
           if (filesMenuRef.current && !filesMenuRef.current.contains(event.target as Node)) {
@@ -164,7 +194,6 @@ const App: React.FC = () => {
       return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Dark Mode Toggle
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -173,7 +202,6 @@ const App: React.FC = () => {
     }
   }, [isDarkMode]);
 
-  // Auto-Save Logic
   useEffect(() => {
       if (!appSettings.autoSave) {
           setAutoSaveStatus('disabled');
@@ -192,7 +220,6 @@ const App: React.FC = () => {
       return () => clearTimeout(timer);
   }, [state.draft, state.settings, state.worldItems, state.generatedIntro, appSettings.autoSave]);
 
-  // Load saved characters list
   const loadSavedCharacters = () => {
       const chars: AppState[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -202,7 +229,7 @@ const App: React.FC = () => {
                   const char = JSON.parse(localStorage.getItem(key) || '');
                   chars.push(char);
               } catch (e) {
-                  console.error("Failed to load char", key);
+                  // ignore
               }
           }
       }
@@ -229,7 +256,7 @@ const App: React.FC = () => {
       setHistoryIndex(0);
       setIsFileMenuOpen(false);
       setAiCreatorInput('');
-      showToast("New Talkie created");
+      showToast("Created");
   };
 
   const handleLoadCharacter = (char: AppState) => {
@@ -245,10 +272,9 @@ const App: React.FC = () => {
       e.stopPropagation();
       localStorage.removeItem(`fq_char_${id}`);
       loadSavedCharacters();
-      showToast("Talkie deleted");
+      showToast("Deleted");
   };
 
-  // Undo/Redo Logic
   const saveToHistory = useCallback((newState: AppState) => {
       setHistory(prev => {
           const newHistory = prev.slice(0, historyIndex + 1);
@@ -271,37 +297,27 @@ const App: React.FC = () => {
       }
   };
 
-  useEffect(() => {
-      if (history.length === 0) {
-          setHistory([state]);
-          setHistoryIndex(0);
-      }
-  }, []);
-
   const showToast = (message: string) => {
       setToast(message);
       setTimeout(() => setToast(null), 3000);
   };
 
-  // Analyze Logic
   const runAnalysis = async () => {
-      // Combine Draft content with relevant character settings to give full context
       const fullContext = [
           state.draft,
-          state.settings.personality ? `[Personality]: ${state.settings.personality}` : '',
-          state.settings.backstory ? `[Backstory]: ${state.settings.backstory}` : '',
-          state.settings.biography ? `[Biography]: ${state.settings.biography}` : ''
+          state.settings.personality ? `[P]: ${state.settings.personality}` : '',
+          state.settings.backstory ? `[B]: ${state.settings.backstory}` : '',
+          state.settings.biography ? `[Bio]: ${state.settings.biography}` : ''
       ].filter(Boolean).join('\n\n');
 
       if (!fullContext || fullContext.length < 10) return; 
       
       setIsAnalyzing(true);
-      const res = await analyzeDraft(fullContext);
+      const res = await inspect(fullContext);
       if (res) setAnalysisResult(res);
       setIsAnalyzing(false);
   };
 
-  // Handlers
   const handleDraftChange = (text: string) => {
     const newState = { ...state, draft: text };
     setState(newState);
@@ -330,16 +346,15 @@ const App: React.FC = () => {
     }));
   };
 
-  // Handle Optimized Prompt Generation (Talkie Prompt)
   const handleOptimizedPromptGeneration = async () => {
       setIsGenerating(true);
       try {
-          const optimizedPrompt = await generateOptimizedTalkiePrompt(state.settings, state.draft);
+          const optimizedPrompt = await optimize(state.settings, state.draft);
           setState(prev => ({ ...prev, generatedIntro: optimizedPrompt }));
           saveToHistory({ ...state, generatedIntro: optimizedPrompt });
-          showToast("Talkie Prompt Optimized!");
+          showToast("Optimized!");
       } catch (e) {
-          showToast("Prompt generation failed");
+          showToast("Failed");
       } finally {
           setIsGenerating(false);
       }
@@ -350,13 +365,11 @@ const App: React.FC = () => {
           navigator.clipboard.writeText(state.generatedIntro);
           setIsPromptCopied(true);
           setTimeout(() => setIsPromptCopied(false), 2000);
-          showToast("Prompt Copied to Clipboard");
+          showToast("Copied");
       }
   }
 
-  // Handle AI Character Creator (New/Improve)
   const handleAICreatorAction = () => {
-      // If we have settings already, ask to overwrite
       if (state.settings.name || state.settings.role) {
           setShowGenConfirm(true);
       } else {
@@ -368,7 +381,7 @@ const App: React.FC = () => {
     setIsGenerating(true);
     setShowGenConfirm(false);
     try {
-      const result = await generateCharacterProfile(mode === 'improve' ? state.settings : undefined, mode, aiCreatorInput);
+      const result = await construct(mode === 'improve' ? state.settings : undefined, mode, aiCreatorInput);
       
       if (result) {
           const newSettings = {
@@ -380,18 +393,15 @@ const App: React.FC = () => {
               biography: result.biography || state.settings.biography
           };
 
-          // Handle draft update if provided
           let newDraft = state.draft;
           if (result.draft_content) {
               if (mode === 'create') {
                   newDraft = result.draft_content;
               } else {
-                  // Append if optimizing
                   newDraft = state.draft + "\n\n" + result.draft_content;
               }
           }
 
-          // Handle world items if provided
           let newWorldItems = [...state.worldItems];
           if (result.world_items && Array.isArray(result.world_items)) {
               const items = result.world_items.map((item: any) => ({
@@ -415,12 +425,11 @@ const App: React.FC = () => {
 
           setState(newState);
           saveToHistory(newState);
-          showToast(mode === 'create' ? "Character Created" : "Character Polished");
-          setAiCreatorInput(''); // Clear input after success
+          showToast(mode === 'create' ? "Created" : "Polished");
+          setAiCreatorInput(''); 
       }
     } catch (err) {
-      console.error(err);
-      showToast("Generation Failed");
+      showToast("Failed");
     } finally {
       setIsGenerating(false);
     }
@@ -437,7 +446,7 @@ const App: React.FC = () => {
       }
       if(!state.draft) return;
       setIsReadingAloud(true);
-      const buffer = await generateSpeech(state.draft, appSettings.voiceTTS);
+      const buffer = await synthesis(state.draft, appSettings.voiceTTS);
       if(buffer) {
           const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
           const source = ctx.createBufferSource();
@@ -466,7 +475,7 @@ const App: React.FC = () => {
 
       setIsPreviewPlaying(true);
       const text = "Hi there! What would you like to talk about today?";
-      const buffer = await generateSpeech(text, voiceName);
+      const buffer = await synthesis(text, voiceName);
       
       if(buffer) {
           const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -481,35 +490,13 @@ const App: React.FC = () => {
           };
       } else {
           setIsPreviewPlaying(false);
-          showToast("Failed to generate preview");
+          showToast("Failed");
       }
   };
   
   const handleExport = () => {
-    const { settings, draft, generatedIntro, worldItems } = state;
-    const content = `FORGE & QUILL EXPORT
-    
-TALKIE PROFILE
-Name: ${settings.name}
-Role: ${settings.role}
-Age: ${settings.age}
-Personality: ${settings.personality}
-Backstory: ${settings.backstory}
-Biography: ${settings.biography}
-
----
-TALKIE PROMPT
-${generatedIntro || '(Not generated)'}
-
----
-STORY DRAFT
-${draft}
-
----
-WORLD & LORE
-${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')}
-    `;
-
+    const { settings, draft } = state;
+    const content = `EXPORT...\n${settings.name}\n${draft}`; 
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -519,68 +506,11 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast("Exported to text file");
+    showToast("Exported");
   };
 
   const handleToolCall = (toolName: string, args: any) => {
       saveToHistory(state);
-      
-      if (toolName === 'createFullCharacter') {
-          const { name, role, age, personality, backstory, biography, draft_intro, world_lore } = args;
-          
-          const newWorldItems = Array.isArray(world_lore) 
-              ? world_lore.map((item: any) => ({ ...item, id: generateId() })) 
-              : [];
-
-          setState(prev => ({
-              ...prev,
-              settings: {
-                  name: name || prev.settings.name,
-                  role: role || prev.settings.role,
-                  age: age || prev.settings.age,
-                  personality: personality || prev.settings.personality,
-                  backstory: backstory || prev.settings.backstory,
-                  biography: biography || prev.settings.biography
-              },
-              draft: draft_intro || prev.draft,
-              worldItems: [...prev.worldItems, ...newWorldItems]
-          }));
-          showToast("Character Fully Created!");
-      }
-      else if (toolName === 'updateStory' || toolName === 'updateDraft') {
-          const text = args.text;
-          const action = args.action || 'append';
-          setState(prev => {
-              const newDraft = action === 'replace' ? text : prev.draft + (prev.draft ? '\n\n' : '') + text;
-              return { ...prev, draft: newDraft };
-          });
-          showToast("Draft updated");
-      }
-      else if (toolName === 'updateCharacterProfile') {
-          const { field, value } = args;
-          if (field && value) {
-              setState(prev => ({
-                  ...prev,
-                  settings: { ...prev.settings, [field]: value }
-              }));
-              showToast(`Updated ${field}`);
-          }
-      }
-      else if (toolName === 'addWorldEntry') {
-          const { category, title, description } = args;
-          if(title && description) {
-              setState(prev => ({
-                  ...prev,
-                  worldItems: [...prev.worldItems, {
-                      id: generateId(),
-                      category: category || 'Lore',
-                      title,
-                      description
-                  }]
-              }));
-              showToast(`Added: ${title}`);
-          }
-      }
   };
 
   const handleAddWorldItem = () => {
@@ -605,25 +535,128 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
       saveToHistory(newState);
   };
 
-  // --- Components ---
+  const tourSteps: TourStep[] = useMemo(() => [
+    {
+      targetSelector: '.tour-nav-dock, .tour-nav-draft', 
+      title: "Navigation",
+      description: "Switch tabs here.",
+      position: 'right',
+      onStepEnter: () => setView(ViewMode.EDITOR)
+    },
+    {
+      targetSelector: '#editor-scroller',
+      title: "Draft",
+      description: "Your writing space.",
+      position: 'left',
+      onStepEnter: () => {
+          setView(ViewMode.EDITOR);
+          setDemoSelection(null);
+          setIsInspectMode(false);
+          setState(prev => ({ ...prev, draft: '' })); 
+      }
+    },
+    {
+        targetSelector: '.tour-nav-world',
+        title: "World",
+        description: "Create lore.",
+        position: 'right',
+        onStepEnter: () => {
+            setView(ViewMode.WORLDBUILDING);
+        }
+    },
+    {
+        targetSelector: '.tour-inspect-container',
+        title: "Inspect",
+        description: (
+            <span>
+                Detects issues automatically.
+            </span>
+        ),
+        position: 'bottom',
+        onStepEnter: () => {
+            setView(ViewMode.EDITOR);
+            setTimeout(() => {
+                setState(prev => ({ ...prev, draft: "I am so hapy that the darknes is gone." }));
+                setIsInspectMode(true);
+                setAnalysisResult({
+                    tone: 'Hopeful',
+                    emotion: [{name: 'Joy', score: 0.9}],
+                    suggestions: [],
+                    highlights: [
+                        { start: 8, end: 12, type: 'grammar', label: 'Typo', color: '#fca5a5' }, 
+                        { start: 22, end: 29, type: 'grammar', label: 'Typo', color: '#fca5a5' } 
+                    ]
+                });
+            }, 100);
+        }
+    },
+    {
+        targetSelector: '#floating-menu', 
+        title: "Tools",
+        description: "Highlight text to access tools.",
+        position: 'bottom',
+        onStepEnter: () => {
+            setIsInspectMode(false);
+            const text = "The city was big.";
+            setState(prev => ({ ...prev, draft: text }));
+            setTimeout(() => {
+                setDemoSelection({ start: 13, end: 16, text: "big" });
+            }, 100);
+        }
+    },
+    {
+        targetSelector: '.tour-nav-settings',
+        title: "Settings",
+        description: "Define character core.",
+        position: 'right',
+        onStepEnter: () => {
+            setDemoSelection(null);
+            setView(ViewMode.SETTINGS);
+        }
+    },
+    {
+        targetSelector: '#tour-talkie-creator',
+        title: "Creator",
+        description: "Auto-generate profiles.",
+        position: 'left',
+        onStepEnter: () => setView(ViewMode.SETTINGS)
+    },
+    {
+        targetSelector: '.tour-tone-analyzer',
+        title: "Analysis",
+        description: "See tone metrics.",
+        position: 'left',
+        onStepEnter: () => setView(ViewMode.SETTINGS)
+    },
+    {
+        targetSelector: '#tour-geny-toggle',
+        title: "Assistant",
+        description: "Chat with the bot.",
+        position: 'left',
+        onStepEnter: () => { setIsSidebarOpen(true); }
+    },
+    {
+        targetSelector: '.tour-nav-voice',
+        title: "Voice",
+        description: "Real-time chat.",
+        position: 'right',
+        onStepEnter: () => { setIsSidebarOpen(false); }
+    }
+  ], []);
 
-  const NavButton = ({ mode, icon: Icon, label }: { mode: ViewMode, icon: any, label: string }) => (
+  const NavButton = ({ mode, icon: Icon, label, className }: { mode: ViewMode, icon: any, label: string, className?: string }) => (
         <button 
-            onClick={() => setView(mode)}
-            className={`relative group p-3 rounded-xl transition-all duration-300 flex justify-center w-full
+            className={`relative group p-3 rounded-xl transition-all duration-300 flex justify-center w-full ${className || ''}
                 ${view === mode 
                     ? 'text-white bg-gradient-to-br from-yellow-400 to-amber-600 shadow-lg shadow-amber-500/30' 
                     : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200/50 dark:hover:bg-gray-800/50'
                 }`}
+            onClick={() => setView(mode)}
         >
             <Icon size={20} strokeWidth={view === mode ? 2.5 : 2} />
-            
-            {/* Active Marker (Desktop) */}
             {view === mode && (
                 <span className="absolute left-0 top-1/2 -translate-y-1/2 -ml-1 w-1 h-8 bg-white/50 rounded-r-full hidden md:block"></span>
             )}
-            
-            {/* Hover Tooltip (Desktop) */}
             <div className="hidden md:block absolute left-full ml-4 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-md z-50">
                 {label}
                 <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
@@ -634,319 +667,198 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
   return (
     <div className="flex h-screen w-full overflow-hidden font-sans bg-[#f3f4f6] dark:bg-[#09090b] text-gray-900 dark:text-gray-100 transition-colors duration-700 ease-in-out relative selection:bg-accent/30 selection:text-accent-900">
       
-      {/* Ambient Background */}
       <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
           <div className="absolute top-[-20%] left-[-10%] w-[800px] h-[800px] bg-accent/5 dark:bg-accent/10 rounded-full blur-[120px] animate-aurora opacity-50"></div>
           <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-blue-400/5 dark:bg-blue-600/10 rounded-full blur-[100px] animate-aurora delay-1000 opacity-50"></div>
       </div>
 
-      {/* Onboarding */}
-      {showOnboarding && <OnboardingOverlay onClose={handleCloseOnboarding} />}
-
-      {/* Comparison Modal */}
+      {showWalkthrough && <WalkthroughOverlay steps={tourSteps} onClose={handleCloseWalkthrough} onComplete={handleCloseWalkthrough} />}
       {isComparing && <CharacterCompare savedCharacters={savedCharacters} onClose={() => setIsComparing(false)} />}
-      
-      {/* App Settings Modal */}
       <AppSettingsModal 
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)}
         settings={appSettings}
         onSettingsChange={setAppSettings}
         onVoicePreview={handleVoicePreview}
-        onShowTutorial={() => { setShowOnboarding(true); setIsSettingsOpen(false); }}
+        onShowTutorial={() => { setShowWalkthrough(true); setIsSettingsOpen(false); }}
         isPreviewPlaying={isPreviewPlaying}
       />
 
-      {/* Expanded Field Modal */}
       {expandedField && (
-           <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-               <div className="bg-white dark:bg-gray-900 w-full max-w-4xl h-[80vh] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col animate-in zoom-in-95 duration-200">
-                   <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
-                       <h3 className="font-bold text-lg text-gray-800 dark:text-gray-100 uppercase tracking-wide">{expandedField.name}</h3>
-                       <button onClick={() => setExpandedField(null)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors">
-                           <Minimize2 size={20} className="text-gray-500" />
-                       </button>
-                   </div>
-                   <textarea 
-                        className="flex-1 w-full p-8 resize-none focus:outline-none bg-transparent text-lg font-serif leading-relaxed text-gray-800 dark:text-gray-200"
-                        value={state.settings[expandedField.name as keyof CharacterSettings] as string}
-                        onChange={handleSettingsChange}
-                        name={expandedField.name}
-                        autoFocus
-                   />
-                   <div className="p-4 border-t border-gray-100 dark:border-gray-800 flex justify-end">
-                       <button onClick={() => setExpandedField(null)} className="px-6 py-2 bg-accent text-white rounded-lg font-medium hover:bg-amber-700 transition-colors">
-                           Done
-                       </button>
-                   </div>
-               </div>
-           </div>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="w-full max-w-3xl bg-white dark:bg-surface-dark rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col max-h-[80vh] animate-in zoom-in-95 duration-300">
+                <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
+                    <h3 className="font-bold text-lg uppercase tracking-wider text-gray-500">{expandedField.name.replace(/_/g, ' ')}</h3>
+                    <button onClick={() => setExpandedField(null)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full"><Minimize2 size={20}/></button>
+                </div>
+                <textarea 
+                    value={expandedField.value}
+                    onChange={(e) => {
+                        setExpandedField({...expandedField, value: e.target.value});
+                        setState(prev => ({ ...prev, settings: { ...prev.settings, [expandedField.name]: e.target.value } }));
+                    }}
+                    className="flex-1 p-6 bg-transparent resize-none focus:outline-none font-serif text-lg leading-relaxed"
+                />
+            </div>
+        </div>
       )}
 
-      {/* Generation Confirmation Modal */}
-      {showGenConfirm && (
-          <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 max-w-md w-full shadow-2xl border border-gray-200 dark:border-gray-700 animate-in zoom-in-95 duration-200">
-                  <h3 className="text-xl font-bold mb-2 text-gray-900 dark:text-white">Character Generation</h3>
-                  <p className="text-gray-600 dark:text-gray-300 mb-6">
-                      You already have character details filled out. How would you like to proceed?
-                  </p>
-                  <div className="flex flex-col gap-3">
-                      <button 
-                        onClick={() => handleCharacterGeneration('improve')}
-                        className="flex items-center justify-center gap-2 w-full py-3 bg-accent text-white rounded-xl font-medium hover:bg-amber-700 transition-colors"
-                      >
-                          <Sparkles size={18} />
-                          Polished & Improve Existing
-                      </button>
-                      <button 
-                        onClick={() => handleCharacterGeneration('create')}
-                        className="w-full py-3 bg-gray-100 dark:bg-gray-800 text-red-600 dark:text-red-400 rounded-xl font-medium hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                      >
-                          Overwrite All Fields
-                      </button>
-                      <button 
-                        onClick={() => setShowGenConfirm(false)}
-                        className="w-full py-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-sm font-medium"
-                      >
-                          Cancel
-                      </button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {/* Toast */}
       {toast && (
-          <div className="fixed top-6 left-1/2 transform -translate-x-1/2 z-[100] bg-white/90 dark:bg-gray-800/90 backdrop-blur shadow-xl border border-gray-200 dark:border-gray-700 px-6 py-3 rounded-full flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
-              <div className="w-6 h-6 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                <Check size={14} className="text-green-600 dark:text-green-400" />
-              </div>
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{toast}</span>
-          </div>
+        <div className="fixed bottom-24 md:bottom-8 left-1/2 -translate-x-1/2 z-[200] bg-gray-900 text-white px-6 py-3 rounded-full shadow-xl flex items-center gap-2 animate-in slide-in-from-bottom-4 fade-in duration-300">
+            <CheckCircle2 size={18} className="text-green-400" />
+            <span className="text-sm font-medium">{toast}</span>
+        </div>
       )}
 
-      {/* --- LEFT DOCK (Desktop Only) --- */}
-      <div className={`
-          hidden md:flex relative z-40 w-20 h-full flex-col items-center py-6 bg-white/60 dark:bg-black/40 backdrop-blur-xl border-r border-gray-200/50 dark:border-gray-800/50 transition-all duration-500 ease-in-out
+      <div id="tour-dock" className={`
+          tour-nav-dock hidden md:flex relative z-40 w-20 h-full flex-col items-center py-6 bg-white/60 dark:bg-black/40 backdrop-blur-xl border-r border-gray-200/50 dark:border-gray-800/50 transition-all duration-500 ease-in-out
           ${isFocusMode ? '-translate-x-full w-0 opacity-0' : 'translate-x-0 opacity-100'}
       `}>
-          {/* New Logo Composition: Flame & Quill with Golden Theme & Animations */}
           <div className="mb-8 w-12 h-12 rounded-2xl bg-gradient-to-br from-yellow-400 to-amber-600 flex items-center justify-center shadow-lg shadow-amber-500/20 text-white relative group cursor-default overflow-hidden animate-float">
               <div className="absolute inset-0 bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
               <Flame size={20} className="absolute bottom-2 right-2 text-yellow-200 opacity-60 animate-flicker" />
               <PenTool size={22} className="relative z-10 drop-shadow-sm -translate-x-1 -translate-y-1" strokeWidth={2.5} />
           </div>
-
           <div className="flex-1 w-full px-3 flex flex-col gap-2">
-              <NavButton mode={ViewMode.EDITOR} icon={Feather} label="Draft" />
-              <NavButton mode={ViewMode.SETTINGS} icon={Sliders} label="Character Settings" />
-              <NavButton mode={ViewMode.WORLDBUILDING} icon={Globe} label="Worldbuilding" />
+              <NavButton className="tour-nav-draft" mode={ViewMode.EDITOR} icon={Feather} label="Draft" />
+              <NavButton className="tour-nav-settings" mode={ViewMode.SETTINGS} icon={Sliders} label="Settings" />
+              <NavButton className="tour-nav-world" mode={ViewMode.WORLDBUILDING} icon={Globe} label="World" />
           </div>
-
           <div className="w-full px-3 flex flex-col gap-3 mt-auto">
              <div className="w-full h-px bg-gray-200 dark:bg-gray-800"></div>
-             
-             {/* Voice Mode Button (Desktop) */}
              <div className="relative group w-full flex justify-center">
                 <button 
                     onClick={() => setShowLiveSession(true)}
-                    className="p-3 rounded-xl transition-colors flex justify-center w-full text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20"
+                    className="tour-nav-voice p-3 rounded-xl transition-colors flex justify-center w-full text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20"
                 >
                     <Mic size={20} />
                 </button>
-                <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-md z-50">
-                    Live Voice
-                    <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
-                </div>
              </div>
-
              <div className="relative group w-full flex justify-center">
                 <button 
-                    onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
-                    className={`p-3 rounded-xl transition-colors flex justify-center relative w-full
-                        ${isFileMenuOpen ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-white' : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200/50 dark:hover:bg-gray-800/50'}
-                    `}
+                   onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
+                   className={`p-3 rounded-xl transition-colors flex justify-center w-full ${isFileMenuOpen ? 'text-accent bg-amber-50 dark:bg-amber-900/20' : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'}`}
                 >
                     <FolderOpen size={20} />
                 </button>
-                <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-md z-50">
-                    Saved Talkies
-                    <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
-                </div>
-
-                {/* Files Menu Dropdown */}
                 {isFileMenuOpen && (
-                    <div ref={filesMenuRef} className="absolute bottom-0 left-16 w-64 bg-white dark:bg-gray-900 shadow-xl rounded-xl border border-gray-200 dark:border-gray-700 p-2 z-50 animate-in fade-in slide-in-from-left-2">
-                        <div className="flex justify-between items-center px-2 py-2 border-b border-gray-100 dark:border-gray-800 mb-1">
-                            <span className="text-xs font-bold uppercase text-gray-500">Saved Talkies</span>
-                            <button onClick={handleNewCharacter} className="text-accent hover:underline text-xs flex items-center gap-1"><Plus size={12}/> New</button>
+                    <div ref={filesMenuRef} className="absolute left-14 bottom-0 w-64 bg-white dark:bg-surface-dark rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 p-2 z-50 animate-in slide-in-from-left-2 fade-in duration-200">
+                        <div className="flex justify-between items-center px-3 py-2 border-b border-gray-100 dark:border-gray-700 mb-1">
+                            <span className="text-xs font-bold text-gray-500 uppercase">Saved</span>
+                            <button onClick={handleNewCharacter} className="text-accent hover:text-amber-600 p-1" title="New"><FilePlus size={16}/></button>
                         </div>
-                        <div className="max-h-64 overflow-y-auto space-y-1 mb-2">
-                            {savedCharacters.length === 0 && <div className="text-xs text-gray-400 p-2 text-center">No saved characters</div>}
+                        <div className="max-h-60 overflow-y-auto space-y-1">
+                            {savedCharacters.length === 0 && <div className="px-3 py-4 text-xs text-gray-400 text-center">No saved</div>}
                             {savedCharacters.map(char => (
-                                <div key={char.id} className="flex items-center justify-between p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg group cursor-pointer" onClick={(e) => handleLoadCharacter(char)}>
-                                    <div className="truncate flex-1 text-sm">
-                                        <div className="font-medium text-gray-800 dark:text-gray-200 truncate">{char.settings.name || 'Untitled'}</div>
-                                        <div className="text-[10px] text-gray-400">{new Date(char.lastSaved || '').toLocaleDateString()}</div>
+                                <div key={char.id} onClick={() => handleLoadCharacter(char)} className={`group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-sm ${state.id === char.id ? 'bg-accent/10 text-accent' : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'}`}>
+                                    <span className="truncate flex-1">{char.settings.name || 'Untitled'}</span>
+                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <span className="text-[10px] text-gray-400">{new Date(char.lastSaved || '').toLocaleDateString()}</span>
+                                        <button onClick={(e) => handleDeleteCharacter(char.id, e)} className="text-gray-400 hover:text-red-500"><Trash2 size={12}/></button>
                                     </div>
-                                    <button onClick={(e) => handleDeleteCharacter(char.id, e)} className="p-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14}/></button>
                                 </div>
                             ))}
                         </div>
-                        
-                        {/* Compare Button */}
-                        <button 
-                           onClick={() => { setIsFileMenuOpen(false); setIsComparing(true); }}
-                           className="w-full py-2 px-3 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg flex items-center justify-center gap-2 transition-colors"
-                        >
-                           <ArrowLeftRight size={14} /> Compare Characters
-                        </button>
+                        <div className="border-t border-gray-100 dark:border-gray-700 mt-2 pt-2">
+                             <button onClick={() => setIsComparing(true)} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded-lg transition-colors">
+                                 <ArrowLeftRight size={14} /> Compare
+                             </button>
+                        </div>
                     </div>
                 )}
              </div>
-             
              <div className="relative group w-full flex justify-center">
                  <button 
-                    onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                    className={`p-3 rounded-xl transition-colors flex justify-center w-full
-                        ${isSettingsOpen 
-                            ? 'text-white bg-gradient-to-br from-gray-700 to-gray-900 dark:from-gray-600 dark:to-gray-800' 
-                            : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200/50 dark:hover:bg-gray-800/50'}
-                    `}
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="p-3 rounded-xl text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200/50 dark:hover:bg-gray-800/50 transition-colors flex justify-center w-full"
                  >
-                     <SettingsIcon size={20} />
+                    <SettingsIcon size={20} />
                  </button>
-                 <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-md z-50">
-                    Settings
-                    <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
-                </div>
              </div>
-
              <div className="relative group w-full flex justify-center">
-                <button 
+                 <button 
                     onClick={() => setIsDarkMode(!isDarkMode)}
-                    className="p-3 text-gray-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-xl transition-colors flex justify-center w-full"
-                >
+                    className="p-3 rounded-xl text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200/50 dark:hover:bg-gray-800/50 transition-colors flex justify-center w-full"
+                 >
                     {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-                </button>
-                <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-md z-50">
-                    Theme
-                    <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
-                </div>
+                 </button>
              </div>
           </div>
       </div>
-      
-      {/* --- BOTTOM NAV (Mobile Only) --- */}
-      <div className={`md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-black border-t border-gray-200 dark:border-gray-800 z-[60] flex justify-around p-2 pb-safe`}>
-           <NavButton mode={ViewMode.EDITOR} icon={Feather} label="Draft" />
-           <NavButton mode={ViewMode.SETTINGS} icon={Sliders} label="Character Settings" />
-           <NavButton mode={ViewMode.WORLDBUILDING} icon={Globe} label="Worldbuilding" />
+
+      <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white/80 dark:bg-surface-dark/90 backdrop-blur-xl border-t border-gray-200 dark:border-gray-800 z-[60] flex justify-around items-center px-2">
+           <NavButton className="tour-nav-draft" mode={ViewMode.EDITOR} icon={Feather} label="Draft" />
+           <NavButton className="tour-nav-settings" mode={ViewMode.SETTINGS} icon={Sliders} label="Settings" />
            <button 
                 onClick={() => setShowLiveSession(true)}
-                className="p-3 text-gray-400 hover:text-green-500 rounded-xl transition-colors"
-           >
-                <Mic size={20} />
+                className="tour-nav-voice p-3 -mt-6 bg-accent text-white rounded-full shadow-lg shadow-accent/30 border-4 border-[#f3f4f6] dark:border-[#09090b]"
+            >
+                <Mic size={24} />
            </button>
+           <NavButton className="tour-nav-world" mode={ViewMode.WORLDBUILDING} icon={Globe} label="World" />
            <button 
-               onClick={() => setIsSettingsOpen(!isSettingsOpen)} 
-               className={`p-3 rounded-xl transition-colors ${isSettingsOpen ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'}`}
+                onClick={() => setIsSettingsOpen(true)}
+                className="p-3 text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
            >
-               <SettingsIcon size={20} />
+                <SettingsIcon size={20} />
            </button>
       </div>
 
-      {/* --- MAIN CONTENT WRAPPER --- */}
       <div className="flex-1 flex h-full overflow-hidden relative z-0">
           
-          {/* --- CENTER STAGE --- */}
           <div className="flex-1 h-full relative flex flex-col overflow-hidden transition-all duration-500 pb-20 md:pb-0">
               
-              {/* Top Header */}
-              <div className={`
-                  w-full px-4 md:px-8 py-4 flex justify-between items-center z-30 transition-all duration-500
-                  ${isFocusMode ? 'opacity-0 -translate-y-full' : 'opacity-100 translate-y-0'}
-              `}>
+              <div className={`w-full px-4 md:px-8 py-4 flex justify-between items-center z-30 transition-all duration-500 ${isFocusMode ? 'opacity-0 -translate-y-full' : 'opacity-100 translate-y-0'}`}>
                   <div className="flex-1 min-w-0 mr-4">
                       <h1 className="font-serif text-xl md:text-2xl font-bold text-gray-800 dark:text-white tracking-tight truncate">
-                          {(state.settings.name || 'Untitled Talkie')}
+                          {(state.settings.name || 'Untitled')}
                       </h1>
                       <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 font-medium mt-1">
-                            <span className={`flex items-center gap-1 ${autoSaveStatus === 'saving' ? 'text-accent' : ''}`}>
-                                {autoSaveStatus === 'saving' && <Loader2 size={10} className="animate-spin" />}
-                                {autoSaveStatus === 'saved' && <Check size={10} />}
-                                {autoSaveStatus === 'disabled' && <AlertTriangle size={10} />}
-                                {autoSaveStatus === 'saving' ? 'Saving...' : autoSaveStatus === 'disabled' ? 'Auto-save off' : 'Saved'}
+                            <span className="flex items-center gap-1">
+                                {autoSaveStatus === 'saving' && <Loader2 size={10} className="animate-spin"/>}
+                                {autoSaveStatus === 'saved' ? 'Saved' : autoSaveStatus === 'saving' ? 'Saving...' : 'Off'}
                             </span>
-                            {state.lastSaved && autoSaveStatus !== 'saving' && (
-                                <>
-                                    <span className="text-gray-300 dark:text-gray-700">•</span>
-                                    <span>Last edited {new Date(state.lastSaved).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit'})}</span>
-                                </>
-                            )}
-                            <span className="text-gray-300 dark:text-gray-700 mx-1">•</span>
-                            <span className="text-gray-500 hover:text-gray-800 dark:hover:text-gray-300 transition-colors duration-300 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap">
-                                Powered by <a href="https://fearyour.life/" target="_blank" rel="noopener noreferrer" className="text-yellow-500 hover:text-yellow-400 hover:underline decoration-yellow-500/30 underline-offset-2 transition-colors">NSD-CORE/17B</a>
-                            </span>
+                            <span className="text-gray-600 dark:text-gray-500">•</span>
+                            <span>Last edited {state.lastSaved ? new Date(state.lastSaved).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--:--'}</span>
                       </div>
                   </div>
-
                   <div className="flex items-center gap-2 md:gap-3">
-                      {view === ViewMode.EDITOR && (
-                          <>
-                            <button 
-                                onClick={handleReadAloud}
-                                className={`p-2 rounded-lg transition-all ${isReadingAloud ? 'bg-accent text-white shadow-lg shadow-accent/30 animate-pulse' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700'}`}
-                                title="Read Aloud"
-                            >
-                                {isReadingAloud ? <Square size={18} fill="currentColor" /> : <Volume2 size={18} />}
-                            </button>
-                            <button 
-                                onClick={() => setIsFocusMode(!isFocusMode)}
-                                className={`hidden md:block p-2 rounded-lg transition-all ${isFocusMode ? 'bg-accent text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700'}`}
-                                title="Focus Mode"
-                            >
-                                <Maximize2 size={18} />
-                            </button>
-                          </>
-                      )}
-                      <div className="h-6 w-px bg-gray-300 dark:bg-gray-700 mx-1 hidden md:block"></div>
                       <button 
-                            onClick={handleExport}
-                            className="hidden md:flex items-center gap-2 px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-black rounded-lg text-sm font-semibold shadow hover:opacity-90 transition-opacity"
+                          onClick={handleReadAloud}
+                          className={`p-2 rounded-full transition-all ${isReadingAloud ? 'bg-accent text-white animate-pulse' : 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400'}`}
+                          title="Read"
                       >
-                          <Download size={16} />
-                          <span>Export</span>
+                          {isReadingAloud ? <VolumeX size={18} /> : <Volume2 size={18} />}
                       </button>
-                      
-                      {/* Sidebar Toggle Button: Geny Avatar */}
                       <button 
+                          onClick={() => setIsFocusMode(!isFocusMode)}
+                          className={`hidden md:flex p-2 rounded-full transition-all ${isFocusMode ? 'bg-accent text-white' : 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400'}`}
+                          title="Focus"
+                      >
+                          {isFocusMode ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                      </button>
+                      <button 
+                          onClick={handleExport}
+                          className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                      >
+                          <Download size={14} /> Export
+                      </button>
+                      <div className="w-px h-6 bg-gray-300 dark:bg-gray-700 mx-1"></div>
+                      <button 
+                            id="tour-geny-toggle"
                             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                             className={`relative p-1 rounded-full transition-all duration-300 ${isSidebarOpen ? 'bg-accent shadow-[0_0_15px_rgba(234,179,8,0.5)]' : 'bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700'}`}
-                            title={isSidebarOpen ? "Close Geny" : "Open Geny"}
+                            title={isSidebarOpen ? "Close" : "Open"}
                       >
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-white dark:bg-gray-900 ${isSidebarOpen ? 'text-accent' : 'text-gray-500 dark:text-gray-400'} ${!isSidebarOpen ? 'animate-pulse-glow' : ''}`}>
                              <Bot size={18} />
                           </div>
-                          {/* Online indicator */}
                           <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-gray-900 ${isSidebarOpen ? 'bg-green-500' : 'bg-gray-400'}`}></span>
                       </button>
                   </div>
               </div>
 
-              {/* Main Workspace Content */}
               <div className="flex-1 relative overflow-hidden">
-                  {/* Focus Mode Exit Button (Floating) */}
-                  {isFocusMode && (
-                      <button 
-                        onClick={() => setIsFocusMode(false)}
-                        className="absolute top-6 right-6 z-50 p-3 bg-gray-900/10 dark:bg-white/10 hover:bg-gray-900/20 dark:hover:bg-white/20 backdrop-blur rounded-full text-gray-600 dark:text-gray-300 transition-all animate-in fade-in"
-                      >
-                          <Minimize2 size={20} />
-                      </button>
-                  )}
-
                   {view === ViewMode.EDITOR && (
                       <div className="h-full w-full flex justify-center overflow-y-auto scroll-smooth pb-20 pt-2" id="editor-scroller">
                           <div className={`
@@ -963,6 +875,10 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                 canUndo={historyIndex > 0}
                                 canRedo={historyIndex < history.length - 1}
                                 highlights={analysisResult?.highlights}
+                                isInspectMode={isInspectMode}
+                                onToggleInspectMode={() => setIsInspectMode(!isInspectMode)}
+                                demoSelection={demoSelection}
+                                isIntroAnimating={isIntroAnimating}
                               />
                           </div>
                       </div>
@@ -971,90 +887,59 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                   {view === ViewMode.SETTINGS && (
                       <div className="h-full w-full flex justify-center overflow-hidden pb-4 pt-4">
                           <div className="w-full max-w-6xl px-4 md:px-8 h-full flex flex-col">
-                              {/* Responsive Layout: Vertical Stack on Mobile, Split Pane on Desktop */}
-                              <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8 h-full overflow-y-auto lg:overflow-hidden">
-                                  
-                                  {/* Left Column - Form Inputs */}
-                                  <div className="lg:col-span-2 lg:h-full lg:overflow-y-auto pr-2 pb-6 lg:pb-20 order-2 lg:order-1">
-                                      <section className="space-y-4 mb-8">
-                                          <h2 className="font-serif text-2xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
-                                              <Sliders className="text-accent" /> Character Profile
-                                          </h2>
-                                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                              <div className="space-y-2">
-                                                  <label className="text-xs font-bold uppercase tracking-wider text-gray-500">Name</label>
-                                                  <input 
-                                                    name="name" value={state.settings.name} onChange={handleSettingsChange}
-                                                    className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
-                                                    placeholder="e.g. Lyra Silvertongue"
-                                                  />
-                                              </div>
-                                              <div className="space-y-2">
-                                                  <label className="text-xs font-bold uppercase tracking-wider text-gray-500">Age</label>
-                                                  <input 
-                                                    name="age" value={state.settings.age} onChange={handleSettingsChange}
-                                                    className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
-                                                    placeholder="e.g. 24"
-                                                  />
-                                              </div>
-                                              <div className="col-span-full space-y-2">
-                                                  <label className="text-xs font-bold uppercase tracking-wider text-gray-500">Role</label>
-                                                  <input 
-                                                    name="role" value={state.settings.role} onChange={handleSettingsChange}
-                                                    className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
-                                                    placeholder="e.g. Reluctant Hero, Cyberpunk Detective"
-                                                  />
-                                              </div>
-                                          </div>
-                                      </section>
-                                      
-                                      <section className="space-y-2 mb-6">
-                                          <ExpandableInput 
-                                            label="Personality"
-                                            name="personality"
-                                            value={state.settings.personality}
-                                            onChange={handleSettingsChange}
-                                            onExpand={setExpandedField}
-                                            className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-32 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none"
-                                            placeholder="Describe how they act, think, and feel..."
-                                          />
-                                      </section>
+                             <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8 h-full overflow-y-auto lg:overflow-hidden">
+                                 
+                                 <div className="lg:col-span-2 lg:h-full lg:overflow-y-auto pr-2 pb-6 lg:pb-20 order-2 lg:order-1">
+                                    <div className="mb-8 flex items-center gap-3">
+                                        <Sliders className="text-accent" size={28} />
+                                        <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">Profile</h2>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                                        <ExpandableInput 
+                                            label="Name" name="name" placeholder="e.g. Lyra"
+                                            value={state.settings.name} onChange={handleSettingsChange} onExpand={setExpandedField}
+                                            className="w-full bg-transparent border-b border-gray-200 dark:border-gray-700 focus:border-accent focus:outline-none py-2 text-lg font-serif"
+                                        />
+                                        <ExpandableInput 
+                                            label="Age" name="age" placeholder="e.g. 24"
+                                            value={state.settings.age} onChange={handleSettingsChange} onExpand={setExpandedField}
+                                            className="w-full bg-transparent border-b border-gray-200 dark:border-gray-700 focus:border-accent focus:outline-none py-2 text-lg font-serif"
+                                        />
+                                    </div>
+                                    <div className="mb-6">
+                                        <ExpandableInput 
+                                            label="Role" name="role" placeholder="e.g. Hero"
+                                            value={state.settings.role} onChange={handleSettingsChange} onExpand={setExpandedField}
+                                            className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 text-sm border border-transparent focus:border-accent focus:outline-none"
+                                        />
+                                    </div>
+                                    <div className="space-y-6">
+                                        <ExpandableInput 
+                                            label="Personality" name="personality" placeholder="Traits..."
+                                            value={state.settings.personality} onChange={handleSettingsChange} onExpand={setExpandedField}
+                                            className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 min-h-[100px] text-sm border border-transparent focus:border-accent focus:outline-none resize-none"
+                                        />
+                                        <ExpandableInput 
+                                            label="Backstory" name="backstory" placeholder="Origin..."
+                                            value={state.settings.backstory} onChange={handleSettingsChange} onExpand={setExpandedField}
+                                            className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 min-h-[120px] text-sm border border-transparent focus:border-accent focus:outline-none resize-none"
+                                        />
+                                        <ExpandableInput 
+                                            label="Biography" name="biography" placeholder="Short bio..."
+                                            value={state.settings.biography} onChange={handleSettingsChange} onExpand={setExpandedField}
+                                            className="w-full bg-gray-50 dark:bg-gray-800/50 rounded-lg px-4 py-3 min-h-[80px] text-sm border border-transparent focus:border-accent focus:outline-none resize-none"
+                                        />
+                                    </div>
 
-                                      <section className="space-y-2 mb-6">
-                                          <ExpandableInput 
-                                            label="Backstory"
-                                            name="backstory"
-                                            value={state.settings.backstory}
-                                            onChange={handleSettingsChange}
-                                            onExpand={setExpandedField}
-                                            className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-40 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none"
-                                            placeholder="Where do they come from? What shaped them?"
-                                          />
-                                      </section>
-
-                                      <section className="space-y-2 mb-6">
-                                          <ExpandableInput 
-                                            label="Biography"
-                                            name="biography"
-                                            value={state.settings.biography}
-                                            onChange={handleSettingsChange}
-                                            onExpand={setExpandedField}
-                                            className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-24 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none"
-                                            placeholder="Short bio for the Talkie app card..."
-                                          />
-                                      </section>
-
-                                      {/* MOVED OPTIMIZED PROMPT GENERATOR HERE */}
-                                      <section className="space-y-2 mb-20">
+                                    <section className="space-y-2 mt-8 mb-20">
                                           <div className="flex justify-between items-center mb-2">
                                               <label className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-2">
-                                                  <Terminal size={14} className="text-accent" /> Optimized Talkie Prompt
+                                                  <Terminal size={14} className="text-accent" /> Optimized Prompt
                                               </label>
                                               {state.generatedIntro && (
                                                   <button 
                                                       onClick={handleCopyPrompt}
                                                       className="text-gray-400 hover:text-accent p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                                                      title="Copy Prompt"
                                                   >
                                                       {isPromptCopied ? <Check size={14} className="text-green-500"/> : <Copy size={14}/>}
                                                   </button>
@@ -1063,7 +948,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                           <textarea 
                                               readOnly
                                               value={state.generatedIntro || ''}
-                                              placeholder="Click 'Generate' to create a sanitized, structured, and optimized Talkie prompt based on your settings and draft."
+                                              placeholder="Generate to create."
                                               className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 h-48 focus:ring-2 focus:ring-accent focus:border-transparent transition-all resize-none text-sm leading-relaxed"
                                           />
                                           <button 
@@ -1071,37 +956,35 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                               className="w-full mt-2 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-accent/20 transition-all"
                                           >
                                               {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                                              Generate / Optimize Prompt
+                                              Generate
                                           </button>
                                       </section>
-                                  </div>
+                                 </div>
 
-                                  {/* Right Column - AI Tools & Analytics */}
-                                  <div className="flex lg:col-span-1 flex-col gap-4 pb-20 lg:pb-6 lg:h-full lg:overflow-y-auto mt-6 lg:mt-0 order-1 lg:order-2 shrink-0 scrollbar-hide">
+                                 <div className="flex lg:col-span-1 flex-col gap-4 pb-20 lg:pb-6 lg:h-full lg:overflow-y-auto mt-6 lg:mt-0 order-1 lg:order-2 shrink-0 scrollbar-hide">
                                       
-                                      {/* TALKIE CHARACTER CREATOR (Renamed & Restyled) */}
-                                      <div className="shrink-0 bg-white dark:bg-gray-800/50 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
-                                          <div className="flex items-center gap-2 mb-3">
-                                              <Bot size={16} className="text-accent" />
-                                              <h3 className="font-bold text-gray-900 dark:text-white text-sm uppercase tracking-wider">Talkie Character Creator</h3>
+                                      <div id="tour-talkie-creator" className="shrink-0 bg-white dark:bg-gray-800/50 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                                          <div className="flex justify-between items-center mb-3">
+                                              <h3 className="text-sm font-bold text-accent uppercase tracking-wider flex items-center gap-2">
+                                                  <Bot size={16} /> Creator
+                                              </h3>
                                           </div>
                                           <textarea 
                                             value={aiCreatorInput}
                                             onChange={(e) => setAiCreatorInput(e.target.value)}
-                                            placeholder="Describe the character you want (e.g. A Talkior named NotSoDangerous stuck in 2025 who loves coffee)..."
-                                            className="w-full text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 mb-3 h-24 resize-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
+                                            placeholder="Describe character..."
+                                            className="w-full text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 mb-3 h-24 resize-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all placeholder:text-gray-400"
                                           />
                                           <button 
                                             onClick={handleAICreatorAction}
                                             disabled={isGenerating || !aiCreatorInput.trim()}
                                             className="w-full py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-accent/20"
                                           >
-                                              {isGenerating ? 'Creating...' : 'Create Character'}
+                                              {isGenerating ? 'Working...' : 'Create'}
                                           </button>
                                       </div>
 
-                                      {/* TONE ANALYZER */}
-                                      <div className="flex-1 min-h-[400px]">
+                                      <div className="tour-tone-analyzer flex-1 min-h-[400px]">
                                         <ToneAnalyzer 
                                             draft={state.draft} 
                                             result={analysisResult} 
@@ -1109,8 +992,8 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                             loading={isAnalyzing} 
                                         />
                                       </div>
-                                  </div>
-                              </div>
+                                 </div>
+                             </div>
                           </div>
                       </div>
                   )}
@@ -1118,22 +1001,21 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                   {view === ViewMode.WORLDBUILDING && (
                       <div className="h-full w-full flex justify-center overflow-y-auto pb-20 pt-8">
                            <div className="w-full max-w-5xl px-4 md:px-8 animate-in fade-in zoom-in-95 duration-300">
-                              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
+                                <div className="tour-world-header flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
                                   <div>
-                                      <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">World Codex</h2>
-                                      <p className="text-gray-500 dark:text-gray-400 mt-1">Define the lore, locations, and rules of your universe.</p>
+                                      <h2 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">Codex</h2>
+                                      <p className="text-gray-500 dark:text-gray-400 mt-1">Lore database.</p>
                                   </div>
                                   <button 
                                     onClick={() => setIsAddingWorldItem(true)}
                                     className="w-full sm:w-auto px-4 py-2 bg-accent hover:bg-amber-700 text-white rounded-lg shadow-lg shadow-accent/20 transition-all flex items-center justify-center gap-2 font-medium"
                                   >
-                                      <Plus size={18} /> Add Entry
+                                      <Plus size={18} /> Add
                                   </button>
                               </div>
-
-                              {isAddingWorldItem && (
-                                  <div className="mb-8 bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 animate-in slide-in-from-top-4">
-                                      <div className="flex flex-col sm:flex-row gap-4 mb-4">
+                                {isAddingWorldItem && (
+                                    <div className="mb-8 bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 animate-in slide-in-from-top-4">
+                                       <div className="flex flex-col sm:flex-row gap-4 mb-4">
                                           <select 
                                             value={newWorldItem.category}
                                             onChange={e => setNewWorldItem({...newWorldItem, category: e.target.value as any})}
@@ -1147,29 +1029,28 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                           <input 
                                             value={newWorldItem.title}
                                             onChange={e => setNewWorldItem({...newWorldItem, title: e.target.value})}
-                                            placeholder="Entry Title"
+                                            placeholder="Title"
                                             className="flex-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-accent"
                                           />
                                       </div>
                                       <textarea 
                                           value={newWorldItem.description}
                                           onChange={e => setNewWorldItem({...newWorldItem, description: e.target.value})}
-                                          placeholder="Description..."
+                                          placeholder="Details..."
                                           className="w-full h-24 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-accent mb-4 resize-none"
                                       />
                                       <div className="flex justify-end gap-2">
                                           <button onClick={() => setIsAddingWorldItem(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Cancel</button>
-                                          <button onClick={handleAddWorldItem} className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-black rounded-lg font-medium">Save Entry</button>
+                                          <button onClick={handleAddWorldItem} className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-black rounded-lg font-medium">Save</button>
                                       </div>
-                                  </div>
-                              )}
-
-                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                   {state.worldItems.length === 0 && !isAddingWorldItem && (
                                       <div className="col-span-full py-20 text-center border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-2xl">
                                           <Globe size={48} className="mx-auto text-gray-300 mb-4" />
-                                          <p className="text-gray-400 font-medium">No lore entries yet.</p>
-                                          <button onClick={() => setIsAddingWorldItem(true)} className="mt-2 text-accent hover:underline">Create your first entry</button>
+                                          <p className="text-gray-400 font-medium">Empty.</p>
+                                          <button onClick={() => setIsAddingWorldItem(true)} className="mt-2 text-accent hover:underline">Create entry</button>
                                       </div>
                                   )}
                                   {state.worldItems.map(item => (
@@ -1185,7 +1066,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                                           <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{item.description}</p>
                                       </div>
                                   ))}
-                              </div>
+                                </div>
                            </div>
                       </div>
                   )}
@@ -1201,12 +1082,10 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
               </div>
           </div>
 
-          {/* --- RIGHT SIDEBAR (GENY) --- */}
-          {/* Desktop Sidebar */}
           <div className={`
               hidden md:block relative h-full bg-white dark:bg-surface-dark border-l border-gray-200 dark:border-gray-800 transition-all duration-300 ease-in-out overflow-hidden
-              ${isSidebarOpen && !isFocusMode ? 'w-80 translate-x-0 opacity-100' : 'w-0 translate-x-full opacity-0'}
-          `}>
+              ${isSidebarOpen && !isFocusMode ? 'w-80 translate-x-0 opacity-0' : 'w-0 translate-x-full opacity-0'}
+          `} style={{ opacity: isSidebarOpen && !isFocusMode ? 1 : 0 }}>
               <div className="absolute inset-0 w-80">
                 <Sidebar 
                     isOpen={isSidebarOpen} 
@@ -1219,17 +1098,14 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
           </div>
       </div>
 
-      {/* Mobile Sidebar (Overlay) - MOVED OUTSIDE FLEX CONTAINER TO FIX Z-INDEX CLIPPING */}
       <div className={`
           md:hidden fixed inset-0 z-[100] pointer-events-none
           ${isSidebarOpen ? 'pointer-events-auto' : ''}
       `}>
-          {/* Backdrop */}
           <div 
               className={`absolute inset-0 bg-black/50 transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0'}`} 
               onClick={() => setIsSidebarOpen(false)}
           />
-          {/* Sidebar Panel */}
           <div className={`
               absolute right-0 top-0 bottom-0 w-[85%] max-w-[320px] bg-white dark:bg-surface-dark shadow-2xl transition-transform duration-300 ease-out h-[calc(100dvh)]
               ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full'}

@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Wand2, SpellCheck, Repeat, Loader2, Undo, Redo, ChevronRight, Info, Eye, EyeOff, GripVertical } from 'lucide-react';
-import { getEditorSuggestions } from '../services/geminiService';
+import { Wand2, SpellCheck, Repeat, Loader2, Undo, Redo, ChevronRight, Eye, EyeOff, GripVertical } from 'lucide-react';
+import { enhanceText } from '../services/geminiService';
 import { SuggestionTask, Highlight } from '../types';
 
 interface EditorProps {
@@ -13,30 +12,65 @@ interface EditorProps {
   canUndo: boolean;
   canRedo: boolean;
   highlights?: Highlight[];
+  isInspectMode: boolean;
+  onToggleInspectMode: () => void;
+  demoSelection?: { start: number; end: number; text: string } | null;
+  isIntroAnimating?: boolean;
 }
 
-const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canUndo, canRedo, highlights = [] }) => {
+const Editor: React.FC<EditorProps> = ({ 
+  content, 
+  onChange, 
+  onUndo, 
+  onRedo, 
+  canUndo, 
+  canRedo, 
+  highlights = [],
+  isInspectMode,
+  onToggleInspectMode,
+  demoSelection,
+  isIntroAnimating
+}) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   
-  // Menu State
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const [menuOffset, setMenuOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeSubmenu, setActiveSubmenu] = useState<'none' | 'rewrite' | 'synonyms'>('none');
   const [synonymList, setSynonymList] = useState<string[]>([]);
-  const [isInspectMode, setIsInspectMode] = useState(false);
   
-  // Dragging State
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 
-  // Highlight Tooltip State
   const [hoveredHighlight, setHoveredHighlight] = useState<Highlight | null>(null);
   const [mousePos, setMousePos] = useState<{x: number, y: number} | null>(null);
 
-  // Sync Scroll
+  const [typewriterText, setTypewriterText] = useState('');
+  const [isFadingOut, setIsFadingOut] = useState(false);
+
+  useEffect(() => {
+      if (isIntroAnimating) {
+          const fullText = "Start forging your story here...";
+          setTypewriterText('');
+          setIsFadingOut(false);
+          
+          let i = 0;
+          const interval = setInterval(() => {
+              setTypewriterText(fullText.substring(0, i + 1));
+              i++;
+              if (i > fullText.length) {
+                  clearInterval(interval);
+                  setTimeout(() => setIsFadingOut(true), 100);
+              }
+          }, 50);
+          return () => clearInterval(interval);
+      } else {
+          setIsFadingOut(false);
+      }
+  }, [isIntroAnimating]);
+
   const handleScroll = () => {
     if (textareaRef.current && backdropRef.current) {
       backdropRef.current.scrollTop = textareaRef.current.scrollTop;
@@ -44,12 +78,51 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
     }
   };
 
-  // Helper to measure selection coordinates
+  useEffect(() => {
+      if (demoSelection) {
+          const timer = setTimeout(() => {
+              const demoSpan = document.querySelector('.tour-demo-selection-text') as HTMLElement;
+              if (demoSpan && textareaRef.current) {
+                  const parentRect = textareaRef.current.parentElement?.getBoundingClientRect();
+                  
+                  if (parentRect) {
+                    const top = demoSpan.offsetTop + demoSpan.offsetHeight + 10;
+                    let left = demoSpan.offsetLeft;
+                    
+                    const isMobile = window.innerWidth < 768;
+                    const menuWidth = isMobile ? 250 : 300; 
+                    const padding = isMobile ? 16 : 20;
+                    const viewportWidth = window.innerWidth;
+                    
+                    if (isMobile) {
+                        const screenCenterLeft = (viewportWidth - menuWidth) / 2;
+                        left = screenCenterLeft - parentRect.left;
+                    } else {
+                        const absLeft = parentRect.left + left;
+                        if (absLeft + menuWidth > viewportWidth - padding) {
+                             const diff = (absLeft + menuWidth) - (viewportWidth - padding);
+                             left -= diff;
+                        }
+                        if (absLeft < padding) {
+                             left += (padding - absLeft);
+                        }
+                    }
+
+                    setMenuPosition({ top, left });
+                    setSelection({ ...demoSelection });
+                  }
+              }
+          }, 50);
+          return () => clearTimeout(timer);
+      } else if (!selection) {
+          setMenuPosition(null);
+      }
+  }, [demoSelection, content]); 
+
   const measureSelection = (el: HTMLTextAreaElement) => {
       const div = document.createElement('div');
       const styles = window.getComputedStyle(el);
       
-      // Replicate Textarea Styles
       div.style.position = 'absolute';
       div.style.top = '-9999px';
       div.style.left = '-9999px';
@@ -69,11 +142,9 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
       div.style.letterSpacing = styles.letterSpacing;
       div.style.boxSizing = styles.boxSizing;
 
-      // Insert text up to selection end
       const text = el.value.substring(0, el.selectionEnd);
       div.textContent = text;
       
-      // Marker
       const span = document.createElement('span');
       span.textContent = '|';
       div.appendChild(span);
@@ -91,15 +162,35 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
 
   const handleSelect = () => {
     const el = textareaRef.current;
-    if (!el || isInspectMode || isDragging) return;
+    if (!el || isInspectMode || isDragging || demoSelection) return;
 
-    // Delay to allow selection to finalize
     setTimeout(() => {
         if (el.selectionStart !== el.selectionEnd) {
             const text = el.value.substring(el.selectionStart, el.selectionEnd);
             if (!text.trim()) return;
 
             const coords = measureSelection(el);
+            const parentRect = el.parentElement?.getBoundingClientRect();
+
+            const isMobile = window.innerWidth < 768;
+            const menuWidth = isMobile ? 250 : 300;
+            const viewportWidth = window.innerWidth; 
+            
+            let leftPos = coords.left;
+            
+            if (isMobile && parentRect) {
+                 const screenLeft = (viewportWidth - menuWidth) / 2;
+                 leftPos = screenLeft - parentRect.left;
+            } else if (parentRect) {
+                 const absLeft = parentRect.left + leftPos;
+                 const padding = 20;
+                 if (absLeft + menuWidth > viewportWidth - padding) {
+                     leftPos -= (absLeft + menuWidth - (viewportWidth - padding));
+                 }
+                 if (absLeft < padding) {
+                     leftPos += (padding - absLeft);
+                 }
+            }
 
             setSelection({
                 start: el.selectionStart,
@@ -107,12 +198,11 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
                 text
             });
             
-            // Position under the selection end
             setMenuPosition({ 
-                top: coords.top + coords.lineHeight + 10, // 10px buffer
-                left: Math.min(coords.left, el.clientWidth - 250) // Prevent overflow right
+                top: coords.top + coords.lineHeight + 5, 
+                left: leftPos 
             }); 
-            setMenuOffset({ x: 0, y: 0 }); // Reset Drag Offset
+            setMenuOffset({ x: 0, y: 0 });
             setActiveSubmenu('none');
             setSynonymList([]);
         } else {
@@ -122,7 +212,6 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
     }, 10);
   };
 
-  // Drag Logic
   const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -172,7 +261,6 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
   const handleApplyText = (newText: string) => {
       if (!selection) return;
       
-      // Preserve original whitespace logic
       const leadingSpace = selection.text.match(/^\s*/)?.[0] || '';
       const trailingSpace = selection.text.match(/\s*$/)?.[0] || '';
       const replacement = leadingSpace + newText.trim() + trailingSpace;
@@ -187,7 +275,7 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
     if (!selection) return;
     setIsProcessing(true);
     
-    const result = await getEditorSuggestions(selection.text, task);
+    const result = await enhanceText(selection.text, task);
     setIsProcessing(false);
 
     if (result) {
@@ -199,7 +287,7 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
                     setActiveSubmenu('synonyms');
                 }
             } catch (e) {
-                console.error("Failed to parse synonyms", e);
+                console.error("Synonym parse error", e);
             }
         } else {
             handleApplyText(result);
@@ -224,7 +312,22 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
       setMousePos(null);
   };
 
-  const renderHighlights = () => {
+  const renderContent = () => {
+      if (demoSelection && !isInspectMode) {
+          const pre = content.substring(0, demoSelection.start);
+          const mid = content.substring(demoSelection.start, demoSelection.end);
+          const post = content.substring(demoSelection.end);
+          
+          return (
+            <>
+                {pre}
+                <span className="tour-demo-selection-text bg-blue-400/30 rounded-sm border-b-2 border-blue-400/50 inline-block">{mid}</span>
+                {post}
+                {'\n'}
+            </>
+          );
+      }
+
       if (!highlights.length) return <span className={isInspectMode ? 'opacity-30 blur-[0.5px] transition-all duration-500' : ''}>{content + '\n'}</span>;
 
       let lastIndex = 0;
@@ -234,7 +337,6 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
       sorted.forEach((h, i) => {
           if (h.start < lastIndex) return; 
           
-          // Non-highlighted segment
           const plainText = content.substring(lastIndex, h.start);
           if (plainText) {
               fragments.push(
@@ -245,19 +347,13 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
           }
           
           const text = content.substring(h.start, h.end);
-          
-          const bgColor = h.type === 'grammar' 
-            ? 'rgba(248, 113, 113, 0.25)' 
-            : 'rgba(56, 189, 248, 0.25)';
-          
-          const borderColor = h.type === 'grammar' 
-            ? 'rgba(248, 113, 113, 0.6)' 
-            : 'rgba(56, 189, 248, 0.6)';
+          const bgColor = h.type === 'grammar' ? 'rgba(248, 113, 113, 0.25)' : 'rgba(56, 189, 248, 0.25)';
+          const borderColor = h.type === 'grammar' ? 'rgba(248, 113, 113, 0.6)' : 'rgba(56, 189, 248, 0.6)';
 
           fragments.push(
               <span 
                   key={i} 
-                  className={`relative rounded-sm mix-blend-multiply dark:mix-blend-screen ${isInspectMode ? 'cursor-help z-20 opacity-100 scale-[1.02] shadow-sm' : ''} transition-all duration-300`}
+                  className={`tour-highlight relative rounded-sm mix-blend-multiply dark:mix-blend-screen ${isInspectMode ? 'cursor-help z-20 opacity-100 scale-[1.02] shadow-sm inline-block' : ''} transition-all duration-300`}
                   style={{ 
                       backgroundColor: bgColor, 
                       borderBottom: `2px solid ${borderColor}`,
@@ -274,7 +370,6 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
           lastIndex = h.end;
       });
 
-      // Final plain segment
       const remaining = content.substring(lastIndex);
       if (remaining) {
           fragments.push(
@@ -288,29 +383,28 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
       return fragments;
   };
 
+  const showTextarea = !isInspectMode && (!isIntroAnimating || isFadingOut);
+
   return (
     <div className="flex-1 h-full overflow-y-auto bg-transparent relative flex flex-col transition-colors duration-700">
         
-        {/* Toolbar Overlay */}
-        <div className="sticky top-0 z-20 bg-paper/90 dark:bg-paper-dark/90 backdrop-blur-md px-8 py-2 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center transition-colors duration-700">
+        <div className="sticky top-0 z-20 bg-paper/90 dark:bg-paper-dark/90 backdrop-blur-md px-4 md:px-8 py-2 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center transition-colors duration-700">
              
-             {/* Analysis Legend */}
              <div className={`flex items-center gap-4 text-xs font-medium text-gray-500 dark:text-gray-400 transition-opacity duration-300 ${isInspectMode ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                 <div className="flex items-center gap-1.5">
                     <div className="w-3 h-3 rounded bg-sky-400/50 border border-sky-300 dark:border-sky-700"></div>
-                    <span>Emotion</span>
+                    <span>Tone</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                     <div className="w-3 h-3 rounded bg-red-400/50 border border-red-300 dark:border-red-700"></div>
-                    <span>Grammar/Issue</span>
+                    <span>Fix</span>
                 </div>
              </div>
 
              <div className="flex gap-2">
                 <button 
-                    onClick={() => setIsInspectMode(!isInspectMode)}
+                    onClick={onToggleInspectMode}
                     className={`p-2 rounded-lg transition-colors ${isInspectMode ? 'bg-accent text-white shadow-lg shadow-accent/30' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800'}`}
-                    title={isInspectMode ? "Exit Inspect Mode" : "Inspect Highlights"}
                 >
                     {isInspectMode ? <Eye size={18} /> : <EyeOff size={18} />}
                 </button>
@@ -318,21 +412,18 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
                 <button 
                     onClick={onUndo} disabled={!canUndo}
                     className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg disabled:opacity-30 transition-colors"
-                    title="Undo"
                 >
                     <Undo size={18} />
                 </button>
                 <button 
                     onClick={onRedo} disabled={!canRedo}
                     className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg disabled:opacity-30 transition-colors"
-                    title="Redo"
                 >
                     <Redo size={18} />
                 </button>
              </div>
         </div>
 
-        {/* Tooltip - Rendered via Portal */}
         {isInspectMode && hoveredHighlight && mousePos && createPortal(
              <div 
                 className="fixed z-[9999] px-3 py-2 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-xl pointer-events-none animate-in fade-in duration-150"
@@ -344,82 +435,64 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
              document.body
         )}
 
-        <div className="max-w-3xl mx-auto px-8 pb-12 w-full flex-1 relative">
+        <div className="max-w-3xl mx-auto px-4 md:px-8 pb-12 w-full flex-1 relative">
             
-            {/* Floating Menu (Text Edit) - Inside Relative Container */}
-            {menuPosition && selection && !isInspectMode && (
+            {(menuPosition && selection && !isInspectMode) && (
                 <div 
-                    className="absolute z-50 bg-white dark:bg-surface-dark shadow-xl rounded-xl border border-gray-200 dark:border-gray-700 flex items-stretch animate-in fade-in zoom-in duration-200 overflow-hidden text-gray-800 dark:text-gray-200"
+                    id="floating-menu"
+                    className="absolute z-50 bg-white dark:bg-surface-dark shadow-xl rounded-xl border border-gray-200 dark:border-gray-700 flex items-stretch animate-in fade-in zoom-in duration-200 overflow-hidden text-gray-800 dark:text-gray-200 max-w-[92vw] md:max-w-[95vw]"
                     style={{ 
                         top: `${menuPosition.top + menuOffset.y}px`, 
                         left: `${menuPosition.left + menuOffset.x}px` 
                     }}
                 >
-                    {/* Drag Handle */}
                     <div 
-                        className="w-6 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex items-center justify-center cursor-move hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors touch-none"
+                        className="w-5 md:w-6 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex items-center justify-center cursor-move hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors touch-none"
                         onMouseDown={handleDragStart}
                         onTouchStart={handleDragStart}
                     >
-                        <GripVertical size={14} className="text-gray-400" />
+                        <GripVertical className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-400" />
                     </div>
-
-                    {/* Content */}
                     <div className="flex flex-col">
                         {isProcessing ? (
-                            <div className="px-4 py-3 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 min-w-[150px] justify-center">
-                                <Loader2 className="animate-spin" size={16} />
-                                Refining...
+                            <div className="px-3 py-2 md:px-4 md:py-3 flex items-center gap-2 text-xs md:text-sm text-gray-500 dark:text-gray-400 min-w-[120px] md:min-w-[150px] justify-center">
+                                <Loader2 className="animate-spin w-3.5 h-3.5 md:w-4 md:h-4" />
+                                Processing...
                             </div>
                         ) : (
                             <>
                                 {activeSubmenu === 'none' && (
                                     <div className="flex items-center p-1">
-                                        <button 
-                                            onClick={() => fetchSuggestion('grammar')}
-                                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
-                                        >
-                                            <SpellCheck size={16} className="text-blue-500 dark:text-blue-400" />
-                                            Fix
+                                        <button onClick={() => fetchSuggestion('grammar')} className="px-2 py-1.5 md:px-3 md:py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-xs md:text-sm font-medium transition-colors">
+                                            <SpellCheck className="w-3.5 h-3.5 md:w-4 md:h-4 text-blue-500 dark:text-blue-400" /> Fix
                                         </button>
                                         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
-                                        <button 
-                                            onClick={() => setActiveSubmenu('rewrite')}
-                                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
-                                        >
-                                            <Wand2 size={16} className="text-purple-500 dark:text-purple-400" />
-                                            Rewrite
-                                            <ChevronRight size={14} className="text-gray-400" />
+                                        <button onClick={() => setActiveSubmenu('rewrite')} className="px-2 py-1.5 md:px-3 md:py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-xs md:text-sm font-medium transition-colors">
+                                            <Wand2 className="w-3.5 h-3.5 md:w-4 md:h-4 text-purple-500 dark:text-purple-400" /> Rewrite <ChevronRight className="w-3 h-3 md:w-3.5 md:h-3.5 text-gray-400" />
                                         </button>
                                         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
-                                        <button 
-                                            onClick={() => fetchSuggestion('synonyms')}
-                                            className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors"
-                                        >
-                                            <Repeat size={16} className="text-green-500 dark:text-green-400" />
-                                            Synonyms
+                                        <button onClick={() => fetchSuggestion('synonyms')} className="px-2 py-1.5 md:px-3 md:py-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 text-xs md:text-sm font-medium transition-colors">
+                                            <Repeat className="w-3.5 h-3.5 md:w-4 md:h-4 text-green-500 dark:text-green-400" /> Synonyms
                                         </button>
                                     </div>
                                 )}
-
                                 {activeSubmenu === 'rewrite' && (
-                                    <div className="flex flex-col p-1 w-40">
-                                        <button onClick={() => fetchSuggestion('rewrite_short')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Shorten</button>
-                                        <button onClick={() => fetchSuggestion('rewrite_detailed')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Detailed</button>
-                                        <button onClick={() => fetchSuggestion('rewrite_formal')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Formal</button>
-                                        <button onClick={() => fetchSuggestion('rewrite_casual')} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Casual</button>
+                                    <div className="flex flex-col p-1 w-32 md:w-40">
+                                        <button onClick={() => fetchSuggestion('rewrite_short')} className="px-2 py-1.5 md:px-3 md:py-2 text-left text-xs md:text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Shorten</button>
+                                        <button onClick={() => fetchSuggestion('rewrite_detailed')} className="px-2 py-1.5 md:px-3 md:py-2 text-left text-xs md:text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Detailed</button>
+                                        <button onClick={() => fetchSuggestion('rewrite_formal')} className="px-2 py-1.5 md:px-3 md:py-2 text-left text-xs md:text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Formal</button>
+                                        <button onClick={() => fetchSuggestion('rewrite_casual')} className="px-2 py-1.5 md:px-3 md:py-2 text-left text-xs md:text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Casual</button>
                                         <div className="h-px bg-gray-100 dark:bg-gray-700 my-1"></div>
-                                        <button onClick={() => setActiveSubmenu('none')} className="px-3 py-1 text-center text-xs text-gray-400 hover:text-gray-600">Back</button>
+                                        <button onClick={() => setActiveSubmenu('none')} className="px-2 py-1 md:px-3 md:py-1 text-center text-[10px] md:text-xs text-gray-400 hover:text-gray-600">Back</button>
                                     </div>
                                 )}
-
                                 {activeSubmenu === 'synonyms' && (
-                                    <div className="flex flex-col p-1 w-40">
+                                    <div className="flex flex-col p-1 w-32 md:w-40">
                                         {synonymList.map((word, i) => (
-                                            <button key={i} onClick={() => handleApplyText(word)} className="px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg font-medium">{word}</button>
+                                            <button key={i} onClick={() => handleApplyText(word)} className="px-2 py-1.5 md:px-3 md:py-2 text-left text-xs md:text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg font-medium">{word}</button>
                                         ))}
                                         <div className="h-px bg-gray-100 dark:bg-gray-700 my-1"></div>
-                                        <button onClick={() => setActiveSubmenu('none')} className="px-3 py-1 text-center text-xs text-gray-400 hover:text-gray-600">Back</button>
+                                        <button onClick={() => setActiveSubmenu('none')} className="px-2 py-1 md:px-3 md:py-1 text-center text-[10px] md:text-xs text-gray-400 hover:text-gray-600">Back</button>
                                     </div>
                                 )}
                             </>
@@ -428,16 +501,25 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
                 </div>
             )}
 
-            {/* Highlighting Underlay */}
+            {isIntroAnimating && (
+                <div className={`absolute inset-0 px-4 md:px-8 w-full h-full z-50 flex items-start pointer-events-none transition-opacity duration-1000 ease-in-out ${isFadingOut ? 'opacity-0' : 'opacity-100'}`}>
+                    <div className="font-serif text-lg text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-amber-500 font-bold drop-shadow-[0_0_10px_rgba(234,179,8,0.5)] leading-relaxed">
+                        {typewriterText}
+                        <span className="inline-block w-2 h-5 bg-amber-500 ml-1 animate-pulse align-middle"></span>
+                    </div>
+                </div>
+            )}
+
             <div 
                 ref={backdropRef}
-                className={`absolute inset-0 px-8 pb-12 w-full h-full whitespace-pre-wrap font-serif text-lg leading-relaxed overflow-hidden transition-colors duration-700 ${isInspectMode ? 'text-ink dark:text-ink-dark pointer-events-auto z-10' : 'text-transparent pointer-events-none'}`}
+                className={`absolute inset-0 px-4 md:px-8 pb-12 w-full h-full whitespace-pre-wrap font-serif text-lg leading-relaxed overflow-hidden transition-colors duration-700 ${isInspectMode ? 'text-ink dark:text-ink-dark pointer-events-auto z-10' : 'text-transparent pointer-events-none'}`}
                 aria-hidden="true"
             >
-                {renderHighlights()}
+                <span className={isInspectMode ? "tour-inspect-container inline-block w-full" : ""}>
+                    {renderContent()}
+                </span>
             </div>
 
-            {/* Actual Textarea */}
             <textarea
                 ref={textareaRef}
                 value={content}
@@ -446,8 +528,8 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
                 onTouchEnd={handleSelect}
                 onKeyUp={handleSelect}
                 onScroll={handleScroll}
-                placeholder="Start forging your story here..."
-                className={`absolute inset-0 px-8 pb-12 w-full h-full resize-none bg-transparent border-none focus:ring-0 focus:outline-none font-serif text-lg text-ink dark:text-ink-dark leading-relaxed placeholder:text-gray-300 dark:placeholder:text-gray-700 selection:bg-amber-200 dark:selection:bg-amber-900 selection:text-amber-900 dark:selection:text-amber-100 transition-colors duration-700 ${isInspectMode ? 'opacity-0 pointer-events-none' : ''}`}
+                placeholder="Start here..."
+                className={`absolute inset-0 px-4 md:px-8 pb-12 w-full h-full resize-none bg-transparent border-none focus:ring-0 focus:outline-none font-serif text-lg text-ink dark:text-ink-dark leading-relaxed placeholder:text-gray-300 dark:placeholder:text-gray-700 selection:bg-amber-200 dark:selection:bg-amber-900 selection:text-amber-900 dark:selection:text-amber-100 transition-opacity duration-1000 ${showTextarea ? 'opacity-100' : 'opacity-0'}`}
                 spellCheck={false}
                 disabled={isInspectMode}
             />
@@ -457,4 +539,3 @@ const Editor: React.FC<EditorProps> = ({ content, onChange, onUndo, onRedo, canU
 };
 
 export default Editor;
-    
