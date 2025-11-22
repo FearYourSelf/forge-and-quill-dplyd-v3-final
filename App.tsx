@@ -887,7 +887,7 @@ ${worldItems.map(w => `[${w.category}] ${w.title}: ${w.description}`).join('\n')
                             )}
                             <span className="text-gray-300 dark:text-gray-700 mx-1">•</span>
                             <span className="text-gray-500 hover:text-gray-800 dark:hover:text-gray-300 transition-colors duration-300 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap">
-                                Powered by <a href="https://flux.fearyour.life" target="_blank" rel="noopener noreferrer" className="text-yellow-500 hover:text-yellow-400 hover:underline decoration-yellow-500/30 underline-offset-2 transition-colors">NSD-CORE/17B</a>
+                                Powered by <a href="https://fearyour.life/" target="_blank" rel="noopener noreferrer" className="text-yellow-500 hover:text-yellow-400 hover:underline decoration-yellow-500/30 underline-offset-2 transition-colors">NSD-CORE/17B</a>
                             </span>
                       </div>
                   </div>
